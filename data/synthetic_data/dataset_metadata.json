@@ -1,0 +1,17 @@
+{
+  "dataset_name": "Synthetic Loan Applicant Dataset",
+  "version": "1.0.0",
+  "generation_timestamp": "2026-09-21T18:11:53.657113+00:00",
+  "random_seed": 42,
+  "number_of_applicants": 100,
+  "number_of_document_packages": 30,
+  "prototype_annual_interest_rate": 0.105,
+  "profile_distribution": {
+    "LOW_RISK": 30,
+    "MEDIUM_RISK": 30,
+    "HIGH_RISK": 20,
+    "BORDERLINE": 20
+  },
+  "purpose": "Experimental input dataset for multi-agent loan underwriting decision-support prototype.",
+  "synthetic_data_notice": "ALL DATA IS SYNTHETIC. Contains no real personal, banking, or credit data."
+}

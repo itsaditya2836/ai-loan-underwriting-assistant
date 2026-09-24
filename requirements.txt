@@ -1,0 +1,16 @@
+streamlit
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+pymupdf
+pillow
+pytesseract
+python-dotenv
+pydantic
+pydantic-settings
+pytest
+black
+ruff
+reportlab

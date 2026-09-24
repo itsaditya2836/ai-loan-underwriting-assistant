@@ -1,0 +1,717 @@
+{
+  "APP0001": {
+    "applicant_id": "APP0001",
+    "name": "Harish Chauhan",
+    "profile_category": "HIGH_RISK",
+    "declared_monthly_income": 37500.0,
+    "declared_existing_emi": 16000.0,
+    "declared_bank_balance": 140000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": null
+  },
+  "APP0002": {
+    "applicant_id": "APP0002",
+    "name": "Satish Singh",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 105000.0,
+    "declared_existing_emi": 21000.0,
+    "declared_bank_balance": 385000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": null
+  },
+  "APP0003": {
+    "applicant_id": "APP0003",
+    "name": "Ashish Singh",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 195000.0,
+    "declared_existing_emi": 18000.0,
+    "declared_bank_balance": 850000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": null
+  },
+  "APP0004": {
+    "applicant_id": "APP0004",
+    "name": "Lavanya Saxena",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 130000.0,
+    "declared_existing_emi": 13000.0,
+    "declared_bank_balance": 460000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": null
+  },
+  "APP0005": {
+    "applicant_id": "APP0005",
+    "name": "Shruti Tiwari",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 135000.0,
+    "declared_existing_emi": 9000.0,
+    "declared_bank_balance": 385000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": null
+  },
+  "APP0006": {
+    "applicant_id": "APP0006",
+    "name": "Aishwarya Iyer",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 165000.0,
+    "declared_existing_emi": 6000.0,
+    "declared_bank_balance": 1050000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "INCOME_MISMATCH",
+        "field": "monthly_income",
+        "declared_value": 165000.0,
+        "documented_value": 107250.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement salary credit is substantially lower than declared income."
+      }
+    ],
+    "notes": null
+  },
+  "APP0007": {
+    "applicant_id": "APP0007",
+    "name": "Siddharth Choudhury",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 85000.0,
+    "declared_existing_emi": 10000.0,
+    "declared_bank_balance": 675000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "INCOME_MISMATCH",
+        "field": "monthly_income",
+        "declared_value": 85000.0,
+        "documented_value": 55250.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement salary credit is substantially lower than declared income."
+      }
+    ],
+    "notes": null
+  },
+  "APP0008": {
+    "applicant_id": "APP0008",
+    "name": "Karthik Goel",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 85000.0,
+    "declared_existing_emi": 18000.0,
+    "declared_bank_balance": 215000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "INCOME_MISMATCH",
+        "field": "monthly_income",
+        "declared_value": 85000.0,
+        "documented_value": 55250.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement salary credit is substantially lower than declared income."
+      }
+    ],
+    "notes": null
+  },
+  "APP0009": {
+    "applicant_id": "APP0009",
+    "name": "Siddharth Sen",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 185000.0,
+    "declared_existing_emi": 8000.0,
+    "declared_bank_balance": 350000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "INCOME_MISMATCH",
+        "field": "monthly_income",
+        "declared_value": 185000.0,
+        "documented_value": 120250.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement salary credit is substantially lower than declared income."
+      }
+    ],
+    "notes": null
+  },
+  "APP0010": {
+    "applicant_id": "APP0010",
+    "name": "Karthik Malhotra",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 60000.0,
+    "declared_existing_emi": 15000.0,
+    "declared_bank_balance": 430000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "INCOME_MISMATCH",
+        "field": "monthly_income",
+        "declared_value": 60000.0,
+        "documented_value": 39000.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement salary credit is substantially lower than declared income."
+      }
+    ],
+    "notes": null
+  },
+  "APP0011": {
+    "applicant_id": "APP0011",
+    "name": "Mukesh Kumar",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 210000.0,
+    "declared_existing_emi": 0.0,
+    "declared_bank_balance": 1075000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "NAME_MISMATCH",
+        "field": "name",
+        "declared_value": "Mukesh Kumar",
+        "documented_value": "Rohan Kumar",
+        "document_affected": "salary_slip",
+        "details": "salary_slip name does not match declared applicant name."
+      }
+    ],
+    "notes": null
+  },
+  "APP0012": {
+    "applicant_id": "APP0012",
+    "name": "Varun Mishra",
+    "profile_category": "HIGH_RISK",
+    "declared_monthly_income": 62500.0,
+    "declared_existing_emi": 18000.0,
+    "declared_bank_balance": 130000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "NAME_MISMATCH",
+        "field": "name",
+        "declared_value": "Varun Mishra",
+        "documented_value": "Pooja Mishra",
+        "document_affected": "salary_slip",
+        "details": "salary_slip name does not match declared applicant name."
+      }
+    ],
+    "notes": null
+  },
+  "APP0013": {
+    "applicant_id": "APP0013",
+    "name": "Bhavna Gupta",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 45000.0,
+    "declared_existing_emi": 7000.0,
+    "declared_bank_balance": 100000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "NAME_MISMATCH",
+        "field": "name",
+        "declared_value": "Bhavna Gupta",
+        "documented_value": "Vikas Gupta",
+        "document_affected": "salary_slip",
+        "details": "salary_slip name does not match declared applicant name."
+      }
+    ],
+    "notes": null
+  },
+  "APP0014": {
+    "applicant_id": "APP0014",
+    "name": "Vinay Joshi",
+    "profile_category": "HIGH_RISK",
+    "declared_monthly_income": 52500.0,
+    "declared_existing_emi": 14000.0,
+    "declared_bank_balance": 20000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "NAME_MISMATCH",
+        "field": "name",
+        "declared_value": "Vinay Joshi",
+        "documented_value": "Sneha Joshi",
+        "document_affected": "income_statement",
+        "details": "income_statement name does not match declared applicant name."
+      }
+    ],
+    "notes": null
+  },
+  "APP0015": {
+    "applicant_id": "APP0015",
+    "name": "Deepa Menon",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 115000.0,
+    "declared_existing_emi": 5000.0,
+    "declared_bank_balance": 85000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "NAME_MISMATCH",
+        "field": "name",
+        "declared_value": "Deepa Menon",
+        "documented_value": "Varun Menon",
+        "document_affected": "salary_slip",
+        "details": "salary_slip name does not match declared applicant name."
+      }
+    ],
+    "notes": null
+  },
+  "APP0016": {
+    "applicant_id": "APP0016",
+    "name": "Neha Mishra",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 100000.0,
+    "declared_existing_emi": 20000.0,
+    "declared_bank_balance": 195000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [
+      "bank_statement"
+    ],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "MISSING_DOCUMENT",
+        "field": "bank_statement",
+        "details": "Bank statement document is missing from the package."
+      }
+    ],
+    "notes": null
+  },
+  "APP0017": {
+    "applicant_id": "APP0017",
+    "name": "Sudha Mishra",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 140000.0,
+    "declared_existing_emi": 37000.0,
+    "declared_bank_balance": 115000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [
+      "salary_slip"
+    ],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "MISSING_DOCUMENT",
+        "field": "salary_slip",
+        "details": "salary_slip is missing from the application package."
+      }
+    ],
+    "notes": null
+  },
+  "APP0018": {
+    "applicant_id": "APP0018",
+    "name": "Pankaj Kulkarni",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 115000.0,
+    "declared_existing_emi": 30000.0,
+    "declared_bank_balance": 135000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [
+      "identity_verification"
+    ],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "MISSING_DOCUMENT",
+        "field": "identity_verification",
+        "details": "Identity verification document is missing from the package."
+      }
+    ],
+    "notes": null
+  },
+  "APP0019": {
+    "applicant_id": "APP0019",
+    "name": "Shilpa Mishra",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 200000.0,
+    "declared_existing_emi": 0.0,
+    "declared_bank_balance": 350000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [
+      "bank_statement"
+    ],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "MISSING_DOCUMENT",
+        "field": "bank_statement",
+        "details": "Bank statement document is missing from the package."
+      }
+    ],
+    "notes": null
+  },
+  "APP0020": {
+    "applicant_id": "APP0020",
+    "name": "Swati Iyer",
+    "profile_category": "MEDIUM_RISK",
+    "declared_monthly_income": 85000.0,
+    "declared_existing_emi": 21000.0,
+    "declared_bank_balance": 310000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [
+      "salary_slip"
+    ],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "MISSING_DOCUMENT",
+        "field": "salary_slip",
+        "details": "salary_slip is missing from the application package."
+      }
+    ],
+    "notes": null
+  },
+  "APP0021": {
+    "applicant_id": "APP0021",
+    "name": "Tarun Reddy",
+    "profile_category": "HIGH_RISK",
+    "declared_monthly_income": 37500.0,
+    "declared_existing_emi": 14000.0,
+    "declared_bank_balance": 135000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "FINANCIAL_INCONSISTENCY",
+        "field": "existing_emi",
+        "declared_value": 14000.0,
+        "documented_value": 29000.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement exhibits undisclosed ongoing recurring loan EMI debits."
+      }
+    ],
+    "notes": null
+  },
+  "APP0022": {
+    "applicant_id": "APP0022",
+    "name": "Bhupesh Choudhury",
+    "profile_category": "LOW_RISK",
+    "declared_monthly_income": 80000.0,
+    "declared_existing_emi": 6000.0,
+    "declared_bank_balance": 300000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "FINANCIAL_INCONSISTENCY",
+        "field": "bank_balance",
+        "declared_value": 300000.0,
+        "documented_value": 75000.0,
+        "document_affected": "bank_statement",
+        "details": "Verified bank statement closing balance is significantly lower than declared balance."
+      }
+    ],
+    "notes": null
+  },
+  "APP0023": {
+    "applicant_id": "APP0023",
+    "name": "Pradeep Tiwari",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 97500.0,
+    "declared_existing_emi": 26000.0,
+    "declared_bank_balance": 55000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "FINANCIAL_INCONSISTENCY",
+        "field": "existing_emi",
+        "declared_value": 26000.0,
+        "documented_value": 41000.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement exhibits undisclosed ongoing recurring loan EMI debits."
+      }
+    ],
+    "notes": null
+  },
+  "APP0024": {
+    "applicant_id": "APP0024",
+    "name": "Kiran Chauhan",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 82500.0,
+    "declared_existing_emi": 22000.0,
+    "declared_bank_balance": 195000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "FINANCIAL_INCONSISTENCY",
+        "field": "bank_balance",
+        "declared_value": 195000.0,
+        "documented_value": 48750.0,
+        "document_affected": "bank_statement",
+        "details": "Verified bank statement closing balance is significantly lower than declared balance."
+      }
+    ],
+    "notes": null
+  },
+  "APP0025": {
+    "applicant_id": "APP0025",
+    "name": "Sneha Menon",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 95000.0,
+    "declared_existing_emi": 22000.0,
+    "declared_bank_balance": 185000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": true,
+    "anomalies": [
+      {
+        "type": "FINANCIAL_INCONSISTENCY",
+        "field": "existing_emi",
+        "declared_value": 22000.0,
+        "documented_value": 37000.0,
+        "document_affected": "bank_statement",
+        "details": "Bank statement exhibits undisclosed ongoing recurring loan EMI debits."
+      }
+    ],
+    "notes": null
+  },
+  "APP0026": {
+    "applicant_id": "APP0026",
+    "name": "Dinesh Goswami",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 105000.0,
+    "declared_existing_emi": 18500.0,
+    "declared_bank_balance": 200000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": "Borderline applicant metrics (credit score / DTI near threshold) for manual review evaluation."
+  },
+  "APP0027": {
+    "applicant_id": "APP0027",
+    "name": "Sunita Das",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 122500.0,
+    "declared_existing_emi": 21000.0,
+    "declared_bank_balance": 220000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": "Borderline applicant metrics (credit score / DTI near threshold) for manual review evaluation."
+  },
+  "APP0028": {
+    "applicant_id": "APP0028",
+    "name": "Swati Joshi",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 112500.0,
+    "declared_existing_emi": 18000.0,
+    "declared_bank_balance": 240000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "income_statement",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": "Borderline applicant metrics (credit score / DTI near threshold) for manual review evaluation."
+  },
+  "APP0029": {
+    "applicant_id": "APP0029",
+    "name": "Sandeep Pandey",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 85000.0,
+    "declared_existing_emi": 14000.0,
+    "declared_bank_balance": 210000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": "Borderline applicant metrics (credit score / DTI near threshold) for manual review evaluation."
+  },
+  "APP0030": {
+    "applicant_id": "APP0030",
+    "name": "Anand Das",
+    "profile_category": "BORDERLINE",
+    "declared_monthly_income": 122500.0,
+    "declared_existing_emi": 21500.0,
+    "declared_bank_balance": 230000.0,
+    "expected_document_types": [
+      "loan_application",
+      "identity_verification",
+      "salary_slip",
+      "bank_statement"
+    ],
+    "missing_documents": [],
+    "has_anomalies": false,
+    "anomalies": [],
+    "notes": "Borderline applicant metrics (credit score / DTI near threshold) for manual review evaluation."
+  }
+}
