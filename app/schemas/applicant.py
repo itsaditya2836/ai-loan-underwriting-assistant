@@ -194,3 +194,88 @@ class DecisionResult(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp of decision generation",
     )
+
+
+class ExtractedField(BaseModel):
+    """Traceable extracted entity with provenance, confidence, and source evidence."""
+
+    field_name: str = Field(..., description="Canonical entity/attribute name")
+    value: Any = Field(..., description="Extracted and normalized field value")
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Deterministic extraction confidence score"
+    )
+    source_document: str = Field(
+        ..., description="Filename or identifier of the originating document"
+    )
+    page_number: int = Field(
+        default=1, ge=1, description="1-indexed document page number of evidence"
+    )
+    evidence: str = Field(
+        ..., description="Exact textual excerpt or line supporting extraction"
+    )
+
+
+class ClassifiedDocument(BaseModel):
+    """Processed document metadata, classification, and extracted structured fields."""
+
+    document_id: str = Field(..., description="Unique document identifier")
+    file_path: str = Field(..., description="Physical filesystem path of document")
+    document_type: str = Field(
+        ...,
+        description="Classified document type (e.g. loan_application, salary_slip, bank_statement)",
+    )
+    classification_confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Confidence of document type classification"
+    )
+    classification_evidence: str = Field(
+        ..., description="Keywords or structural markers identifying document type"
+    )
+    is_scanned: bool = Field(
+        default=False,
+        description="Indicates if document was rasterized/scanned requiring OCR",
+    )
+    page_count: int = Field(default=1, ge=1, description="Total number of pages")
+    raw_text: str = Field(
+        default="", description="Full extracted text (direct PDF or OCR)"
+    )
+    extracted_fields: Dict[str, ExtractedField] = Field(
+        default_factory=dict,
+        description="Mapping of field names to ExtractedField records",
+    )
+
+
+class DocumentPackageResult(BaseModel):
+    """Comprehensive package-level intelligence result for an applicant's document folder."""
+
+    applicant_id: str = Field(..., description="Applicant identifier")
+    package_dir: str = Field(..., description="Directory path containing documents")
+    documents_found: List[ClassifiedDocument] = Field(
+        default_factory=list, description="List of successfully ingested documents"
+    )
+    documents_missing: List[str] = Field(
+        default_factory=list,
+        description="List of expected document types absent from the package",
+    )
+    expected_documents: List[str] = Field(
+        default_factory=list,
+        description="List of required document types based on employment profile",
+    )
+    is_complete: bool = Field(
+        default=False,
+        description="True if all expected documents are present and successfully processed",
+    )
+    ocr_used: bool = Field(
+        default=False,
+        description="Indicates whether OCR was triggered for any document in package",
+    )
+    processing_status: str = Field(
+        default="completed", description="Overall intake status (completed, failed)"
+    )
+    processing_errors: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings or processing error messages",
+    )
+    all_extracted_fields: Dict[str, ExtractedField] = Field(
+        default_factory=dict,
+        description="Flat aggregated key-value map of all extracted fields across documents",
+    )

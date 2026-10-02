@@ -284,7 +284,8 @@ pytest
 
 - **Stage 1 — Project Setup** *(Completed)*: Foundational directory architecture, configuration, Pydantic schemas, database connection abstraction, Streamlit UI shell, and test suite.
 - **Stage 2 — Synthetic Applicant Dataset** *(Completed)*: 100 synthetic applicant profiles, 30 complete document packages (120 PDFs), controlled anomaly cohorts, ground-truth metadata, and validation tooling.
-- **Stage 3 — Document Processing**: Implementation of PDF parsing, pytesseract OCR pipeline, and key-value entity extraction.
+- **Stage 3 — Document Processing** *(Completed)*: Implementation of PyMuPDF PDF parsing, local pytesseract OCR pipeline, document classification, traceable key-value entity extraction, missing document detection, and ground-truth evaluation.
+
 - **Stage 4 — Eligibility Engine**: Implementation of deterministic rule evaluation (DTI calculations, minimum income, age limits, credit score thresholds).
 - **Stage 5 — Risk Model**: Heuristic risk scoring and Scikit-learn default prediction model training and integration.
 - **Stage 6 — Fraud / Anomaly Detection**: Implementation of cross-document consistency checks and discrepancy detection heuristics.

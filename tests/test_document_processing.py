@@ -23,26 +23,27 @@ def test_document_schema_instantiation():
     assert doc.extracted_fields == {}
 
 
-def test_document_agent_placeholder():
-    """Verify DocumentIntakeAgent can be initialized and raises NotImplementedError."""
+def test_document_agent_execution():
+    """Verify DocumentIntakeAgent can process empty list cleanly."""
     agent = DocumentIntakeAgent()
     assert agent is not None
-
-    with pytest.raises(NotImplementedError, match="Stage 3"):
-        agent.process([])
+    assert agent.process([]) == []
 
 
 def test_document_processing_components():
-    """Verify PDFReader, OCRProcessor, and DocumentExtractor placeholders."""
+    """Verify PDFReader, OCRProcessor, and DocumentExtractor functionality."""
     reader = PDFReader()
     ocr = OCRProcessor()
     extractor = DocumentExtractor()
 
-    with pytest.raises(NotImplementedError):
-        reader.extract_text("dummy.pdf")
+    # Reader handles non-existent gracefully
+    info = reader.read_pdf("dummy.pdf")
+    assert info.error is not None
 
-    with pytest.raises(NotImplementedError):
+    # OCR raises ValueError on None input
+    with pytest.raises(ValueError):
         ocr.process_image(None)
 
-    with pytest.raises(NotImplementedError):
-        extractor.extract_fields("dummy text", "salary_slip")
+    # Extractor extracts fields on dummy text without error
+    fields = extractor.extract_fields("dummy text", "salary_slip")
+    assert isinstance(fields, dict)
