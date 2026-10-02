@@ -8,11 +8,14 @@ from app.schemas.applicant import (
     Document,
     DocumentPackageResult,
     EligibilityResult,
+    EligibilityRuleResult,
+    EligibilityStatus,
     EmploymentType,
     ExtractedField,
     RecommendationType,
     RiskLevel,
     RiskResult,
+    RuleStatus,
 )
 
 __all__ = [
@@ -23,9 +26,12 @@ __all__ = [
     "Document",
     "DocumentPackageResult",
     "EligibilityResult",
+    "EligibilityRuleResult",
+    "EligibilityStatus",
     "EmploymentType",
     "ExtractedField",
     "RecommendationType",
     "RiskLevel",
     "RiskResult",
+    "RuleStatus",
 ]

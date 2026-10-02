@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class EmploymentType(str, Enum):
@@ -103,27 +103,165 @@ class Document(BaseModel):
     )
 
 
+class EligibilityStatus(str, Enum):
+    """Categorical eligibility status outcomes."""
+
+    ELIGIBLE = "ELIGIBLE"
+    INELIGIBLE = "INELIGIBLE"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+
+
+class RuleStatus(str, Enum):
+    """Evaluation status for an individual eligibility rule."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+
+
+class EligibilityRuleResult(BaseModel):
+    """Structured evaluation result for a single eligibility rule."""
+
+    rule_id: str = Field(
+        ..., description="Unique identifier for the rule (e.g. MIN_AGE)"
+    )
+    rule_name: str = Field(..., description="Human-readable rule name")
+    status: RuleStatus = Field(
+        ..., description="Evaluation outcome: PASS, FAIL, or REVIEW_REQUIRED"
+    )
+    actual_value: Any = Field(default=None, description="Actual observed value")
+    expected_value: Any = Field(
+        default=None, description="Expected threshold or permissible range"
+    )
+    passed: bool = Field(
+        default=False, description="Convenience flag: True if status is PASS"
+    )
+    severity: str = Field(
+        default="MANDATORY",
+        description="Rule severity tier: MANDATORY or ADVISORY",
+    )
+    reason: str = Field(..., description="Clear explanation of evaluation result")
+    evidence: Optional[str] = Field(
+        default=None, description="Documentary or textual evidence citation"
+    )
+    source_document: Optional[str] = Field(
+        default=None, description="Source document filename or identifier"
+    )
+    page_number: Optional[int] = Field(
+        default=None, description="1-indexed page number containing evidence"
+    )
+
+
 class EligibilityResult(BaseModel):
     """Structured output from the Eligibility Agent."""
 
+    applicant_id: str = Field(default="", description="Target applicant identifier")
+    status: EligibilityStatus = Field(
+        default=EligibilityStatus.REVIEW_REQUIRED,
+        description="Overall eligibility status: ELIGIBLE, INELIGIBLE, or REVIEW_REQUIRED",
+    )
+    eligible: bool = Field(
+        default=False,
+        description="Binary indicator of eligibility (True only if status == ELIGIBLE)",
+    )
     is_eligible: bool = Field(
-        ..., description="Binary indicator of rule-based eligibility"
+        default=False,
+        description="Legacy alias for eligible",
+    )
+    rules_evaluated: List[str] = Field(
+        default_factory=list,
+        description="List of all rule IDs evaluated",
+    )
+    rules_passed: List[str] = Field(
+        default_factory=list,
+        description="List of rule IDs that passed",
+    )
+    rules_failed: List[str] = Field(
+        default_factory=list,
+        description="List of rule IDs that failed",
+    )
+    rules_requiring_review: List[str] = Field(
+        default_factory=list,
+        description="List of rule IDs requiring manual review",
     )
     passed_rules: List[str] = Field(
-        default_factory=list, description="List of rule codes or descriptions passed"
+        default_factory=list,
+        description="Legacy alias for rules_passed",
     )
     failed_rules: List[str] = Field(
-        default_factory=list, description="List of rule codes or descriptions failed"
+        default_factory=list,
+        description="Legacy alias for rules_failed",
+    )
+    rule_results: List[EligibilityRuleResult] = Field(
+        default_factory=list,
+        description="Granular result details for each evaluated rule",
+    )
+    reasons: List[str] = Field(
+        default_factory=list,
+        description="Summary explanations for the eligibility determination",
+    )
+    evidence: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured citations and evidence for evaluated rules",
+    )
+    policy_version: str = Field(
+        default="eligibility_policy_v1",
+        description="Version identifier of the eligibility policy applied",
     )
     max_eligible_amount: Optional[float] = Field(
-        default=None, description="Maximum loan amount permitted by policy calculations"
+        default=None,
+        description="Maximum loan amount permitted by policy calculations",
     )
     dti_ratio: Optional[float] = Field(
-        default=None, description="Calculated Debt-to-Income ratio (percentage)"
+        default=None,
+        description="Calculated Debt-to-Income ratio (percentage)",
     )
     remarks: Optional[str] = Field(
-        default=None, description="Detailed explanatory observations"
+        default=None,
+        description="Detailed explanatory observations",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Sync is_eligible and eligible
+            if "is_eligible" in data and "eligible" not in data:
+                data["eligible"] = bool(data["is_eligible"])
+                if "status" not in data:
+                    data["status"] = (
+                        EligibilityStatus.ELIGIBLE
+                        if data["is_eligible"]
+                        else EligibilityStatus.INELIGIBLE
+                    )
+            elif "eligible" in data and "is_eligible" not in data:
+                data["is_eligible"] = bool(data["eligible"])
+            elif "status" in data:
+                st = data["status"]
+                if isinstance(st, str):
+                    st = st.upper()
+                is_el = (
+                    st == EligibilityStatus.ELIGIBLE
+                    or st == "ELIGIBLE"
+                    or (hasattr(st, "value") and st.value == "ELIGIBLE")
+                )
+                if "eligible" not in data:
+                    data["eligible"] = is_el
+                if "is_eligible" not in data:
+                    data["is_eligible"] = is_el
+
+            # Sync rules_passed and passed_rules
+            if "passed_rules" in data and "rules_passed" not in data:
+                data["rules_passed"] = list(data["passed_rules"])
+            elif "rules_passed" in data and "passed_rules" not in data:
+                data["passed_rules"] = list(data["rules_passed"])
+
+            # Sync rules_failed and failed_rules
+            if "failed_rules" in data and "rules_failed" not in data:
+                data["rules_failed"] = list(data["failed_rules"])
+            elif "rules_failed" in data and "failed_rules" not in data:
+                data["failed_rules"] = list(data["rules_failed"])
+        return data
 
 
 class RiskResult(BaseModel):

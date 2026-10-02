@@ -1,27 +1,49 @@
 """Eligibility Agent module.
 
-Evaluates applicant profiles against predefined underwriting policy rules,
-such as minimum income thresholds, employment history, age brackets, and Debt-to-Income (DTI) caps.
+Evaluates structured applicant information and document packages against
+predefined underwriting policy rules using the deterministic EligibilityEvaluator.
 """
 
-from app.schemas.applicant import Applicant, EligibilityResult
+from typing import Any, Dict, Optional, Union
+
+from app.eligibility.evaluator import EligibilityEvaluator
+from app.eligibility.policy import EligibilityPolicy
+from app.schemas.applicant import Applicant, DocumentPackageResult, EligibilityResult
 from app.utils.helpers import get_logger
 
 logger = get_logger(__name__)
 
 
 class EligibilityAgent:
-    """Agent responsible for checking deterministic underwriting eligibility rules.
+    """Agent responsible for evaluating deterministic underwriting eligibility rules.
 
-    Implementation will be added in Stage 4.
+    Consumes verified, structured output from the Stage 3 Document Intelligence stage
+    (or structured Applicant profiles) and returns a transparent EligibilityResult.
+    Does not read PDFs, perform OCR, or run ML risk models.
     """
 
-    def __init__(self) -> None:
-        logger.info("EligibilityAgent initialized (Placeholder).")
+    def __init__(self, policy: Optional[EligibilityPolicy] = None) -> None:
+        """Initialize the agent with an underwriting eligibility policy."""
+        self.policy = policy or EligibilityPolicy.default_policy()
+        self.evaluator = EligibilityEvaluator(policy=self.policy)
+        logger.info(
+            "EligibilityAgent initialized with policy '%s'.",
+            self.policy.policy_version,
+        )
 
-    def evaluate(self, applicant: Applicant) -> EligibilityResult:
-        """Evaluate applicant data against lending eligibility criteria.
+    def evaluate(
+        self, target: Union[DocumentPackageResult, Applicant, Dict[str, Any]]
+    ) -> EligibilityResult:
+        """Evaluate applicant profile or document package against underwriting rules.
 
-        TODO: Implement rule engine for income, DTI, age, and employment criteria in Stage 4.
+        Args:
+            target: Stage 3 DocumentPackageResult, structured Applicant model, or raw data dict.
+
+        Returns:
+            EligibilityResult detailing overall status, individual rule outcomes,
+            evidence citations, and transparent explanations.
         """
-        raise NotImplementedError("Eligibility Agent will be implemented in Stage 4.")
+        logger.info(
+            "Evaluating eligibility for target type: %s.", type(target).__name__
+        )
+        return self.evaluator.evaluate(target)

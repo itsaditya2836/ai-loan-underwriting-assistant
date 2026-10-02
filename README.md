@@ -93,6 +93,11 @@ AI-Loan-Underwriting-Assistant/
 │   │   ├── pdf_reader.py           # PyMuPDF-based text and image extraction
 │   │   ├── ocr.py                  # pytesseract wrapper for image OCR
 │   │   └── extractor.py            # Key-value field parser
+│   ├── eligibility/                # Centralized underwriting eligibility engine
+│   │   ├── __init__.py
+│   │   ├── policy.py               # Configurable EligibilityPolicy thresholds
+│   │   ├── rules.py                # Deterministic rule evaluations
+│   │   └── evaluator.py            # EligibilityEvaluator and aggregation logic
 │   ├── risk/                       # Risk modeling and scoring logic
 │   │   ├── __init__.py
 │   │   ├── rules.py                # Deterministic underwriting rule checks
@@ -282,13 +287,12 @@ pytest
 
 ## Development Roadmap
 
-- **Stage 1 — Project Setup** *(Completed)*: Foundational directory architecture, configuration, Pydantic schemas, database connection abstraction, Streamlit UI shell, and test suite.
-- **Stage 2 — Synthetic Applicant Dataset** *(Completed)*: 100 synthetic applicant profiles, 30 complete document packages (120 PDFs), controlled anomaly cohorts, ground-truth metadata, and validation tooling.
-- **Stage 3 — Document Processing** *(Completed)*: Implementation of PyMuPDF PDF parsing, local pytesseract OCR pipeline, document classification, traceable key-value entity extraction, missing document detection, and ground-truth evaluation.
-
-- **Stage 4 — Eligibility Engine**: Implementation of deterministic rule evaluation (DTI calculations, minimum income, age limits, credit score thresholds).
-- **Stage 5 — Risk Model**: Heuristic risk scoring and Scikit-learn default prediction model training and integration.
-- **Stage 6 — Fraud / Anomaly Detection**: Implementation of cross-document consistency checks and discrepancy detection heuristics.
-- **Stage 7 — Multi-Agent System**: Google Gemini integration, reasoning prompt chains, multi-agent orchestration, and recommendation synthesis.
-- **Stage 8 — Dashboard & Audit**: Interactive Streamlit loan officer dashboard integration with live database audit logging and human decision capture.
-- **Stage 9 — Testing & Evaluation**: End-to-end evaluation, benchmark metrics, adversarial anomaly tests, and documentation.
+- **Stage 0 — Project Synopsis**: COMPLETE
+- **Stage 1 — Core Project Foundation**: COMPLETE
+- **Stage 2 — Synthetic Dataset & Test Documents**: COMPLETE
+- **Stage 3 — Document Intelligence / Document Intake**: COMPLETE
+- **Stage 4 — Eligibility Agent**: COMPLETE
+- **Stage 5 — Risk Assessment Agent**: NEXT (Heuristic risk scoring and default prediction model training)
+- **Stage 6 — Fraud & Anomaly Detection Agent**: PLANNED (Cross-document consistency and anomaly heuristics)
+- **Stage 7 — Multi-Agent Orchestrator**: PLANNED (Workflow coordination and decision synthesis)
+- **Stage 8 — Decision & Reasoning Agent / Dashboard**: PLANNED (Loan officer dashboard and audit trail)
