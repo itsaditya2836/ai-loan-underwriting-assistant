@@ -64,13 +64,13 @@ def get_database_connection() -> Generator[sqlite3.Connection, None, None]:
 
 
 def init_db() -> None:
-    """Initialize database connection and verify accessibility.
-
-    Full schema migrations and tables for applications, documents,
-    agent findings, recommendations, and audit logs will be added in Stage 8.
-    """
+    """Initialize database connection, verify accessibility, and create tables."""
     logger.info("Verifying database connectivity...")
     with get_database_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT 1;")
         logger.info("Database connection established successfully.")
+
+    from app.database.audit import init_audit_table
+
+    init_audit_table()

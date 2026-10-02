@@ -446,7 +446,66 @@ Primary Reason:        [DEC-ANOM-001] Cross-document discrepancy detected (ANOM-
 ### Limitations & Stage Boundary Notice
 - **Synthetic Data**: Evaluated on controlled synthetic cohorts; does not represent empirical real-world default or fraud rates.
 - **Anomaly ≠ Confirmed Fraud**: Discrepancies warrant human review; they are never equated to confirmed fraud.
-- **Stage Boundary**: Stage 8 is COMPLETE. Stage 9 (Dashboard & Audit Trail) is NOT implemented.
+- **Stage Boundary**: Stage 8 is COMPLETE.
+
+---
+
+## Stage 9 — Dashboard & Audit Trail
+
+Stage 9 implements a comprehensive, interactive **Streamlit Dashboard** and an immutable **SQLite Audit Trail** providing an executive decision-support interface for loan officers, risk managers, and auditors.
+
+### How to Start the Dashboard
+
+```bash
+# Launch the Streamlit Underwriting Dashboard
+.venv/bin/streamlit run app/main.py
+
+# Or verify system health and database tables via CLI
+.venv/bin/python app/main.py
+```
+
+### Major Dashboard Features
+
+1. **🚀 Underwriting Pipeline Screen**:
+   - Applicant selection across all 100 synthetic profiles with physical document package indicators.
+   - One-click end-to-end multi-agent pipeline execution (`▶ Run Underwriting Analysis`).
+   - Executive Summary Cards: AI Recommendation (`APPROVE`, `REJECT`, `MANUAL_REVIEW`), Decision Confidence (0.0%–100.0%), Stage 4 Eligibility, Stage 5 Risk Tier & Score, Stage 6 Anomaly Severity & Flags, Stage 3 Verified Documents.
+   - Explainable Reasoning section displaying the Stage 8 executive narrative and granular reason cards.
+   - Three distinct factor breakdown cards: Positive Factors (🟢), Negative Factors (🟡), and Blocking Factors (🔴).
+   - Multi-agent execution telemetry tracking individual agent status and wall-clock execution latency.
+   - Deep-dive analytical tabs for Stage 3 Document Intelligence, Stage 4 Eligibility Rules, Stage 5 ML Risk Assessment, and Stage 6 Fraud/Anomaly Detection.
+
+2. **👤 Application Details Screen**:
+   - Comprehensive applicant dossier (Personal, Employment, Financial Ledger, Loan Request).
+   - Complete application history showing all historical evaluations for the selected applicant (`Run 1`, `Run 2`, etc.), demonstrating multi-run preservation.
+
+3. **📜 Audit Trail & History Screen**:
+   - Centralized compliance ledger powered by the SQLite `underwriting_runs` table.
+   - Interactive filtering by Recommendation, Pipeline Status, Risk Tier, and Anomaly Severity.
+   - Full historical run inspector providing read-only snapshots of previous underwriting analyses.
+   - Immutability: Every run receives a unique `run_id` and is never overwritten or deleted.
+
+4. **📊 Aggregate Portfolio Analytics**:
+   - Executive KPIs: Total Runs, Unique Applications Evaluated, Manual Review Rate (%), Approval Rate (%), Average Confidence (%), and Average Latency.
+   - 4 interactive distribution charts: Recommendation Distribution, Risk Tier Distribution, Anomaly Severity Distribution, and Eligibility Status Distribution.
+   - Preload utility button allowing reviewers to populate the audit table with all 30 baseline cohorts in seconds.
+
+### Human-in-the-Loop & Ethical Governance
+- **Advisory Decision Support**: Labeled prominently as **`AI RECOMMENDATION`**, never `FINAL BANK DECISION`.
+- **Mandatory Review Banner**: Every application displays the warning:
+  > *"Human Review Required: This system provides an AI-generated underwriting recommendation for decision support. Final lending authority remains with an authorized human underwriter."*
+- **Academic / Synthetic Data Disclaimer**: Prominently notes that data is synthetic and not connected to real customer accounts.
+- **Anomaly Terminology**: Anomaly indicators are strictly framed as inconsistencies requiring verification; never labeled as confirmed fraud.
+
+### Verification & Testing Commands
+
+```bash
+# Run the Stage 9 dashboard and audit trail test suite
+pytest tests/test_dashboard_audit.py
+
+# Run the complete project test suite (167 passing tests)
+pytest
+```
 
 ---
 
@@ -461,5 +520,6 @@ Primary Reason:        [DEC-ANOM-001] Cross-document discrepancy detected (ANOM-
 - **Stage 6 — Fraud & Anomaly Detection Agent**: COMPLETE
 - **Stage 7 — Multi-Agent Orchestrator**: COMPLETE
 - **Stage 8 — Decision & Reasoning Agent**: COMPLETE
-- **Stage 9 — Dashboard & Audit Trail**: NEXT
+- **Stage 9 — Dashboard & Audit Trail**: COMPLETE
+
 
