@@ -39,6 +39,7 @@ class RiskLevel(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+    BORDERLINE = "BORDERLINE"
 
 
 class Applicant(BaseModel):
@@ -267,22 +268,74 @@ class EligibilityResult(BaseModel):
 class RiskResult(BaseModel):
     """Structured output from the Risk Assessment Agent."""
 
-    risk_score: Optional[float] = Field(
-        default=None, ge=0.0, le=100.0, description="Normalized risk score (0-100)"
+    applicant_id: str = Field(default="", description="Target applicant identifier")
+    risk_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Normalized risk score (0-100; higher score indicates higher modeled risk)",
+    )
+    risk_category: RiskLevel = Field(
+        default=RiskLevel.MEDIUM,
+        description="Categorized risk tier: LOW, MEDIUM, HIGH, or BORDERLINE",
     )
     risk_level: Optional[RiskLevel] = Field(
-        default=None, description="Categorized risk tier: LOW, MEDIUM, or HIGH"
+        default=None,
+        description="Legacy alias for risk_category",
     )
     risk_factors: List[str] = Field(
         default_factory=list,
-        description="Identified risk factors contributing to score",
+        description="Identified adverse financial/credit risk factors contributing to score",
     )
-    model_version: Optional[str] = Field(
-        default=None, description="Identifier of the risk model/rule set used"
+    protective_factors: List[str] = Field(
+        default_factory=list,
+        description="Identified favorable financial attributes mitigating risk",
+    )
+    features_used: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Feature values input to the risk model for evaluation",
+    )
+    feature_importance: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Model-level feature importance or coefficient weights",
+    )
+    model_version: str = Field(
+        default="risk_model_v1",
+        description="Identifier and version of the risk model applied",
+    )
+    method: str = Field(
+        default="ML_RANDOM_FOREST",
+        description="Methodology used: ML_RANDOM_FOREST, BASELINE_WEIGHTED, etc.",
+    )
+    explanation: str = Field(
+        default="",
+        description="Comprehensive synthesized explanation of the risk assessment",
+    )
+    evidence: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Quantitative and documentary evidence citations",
     )
     remarks: Optional[str] = Field(
-        default=None, description="Detailed risk assessment notes"
+        default=None,
+        description="Legacy alias for explanation / summary observations",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Sync risk_level and risk_category
+            if "risk_level" in data and "risk_category" not in data:
+                data["risk_category"] = data["risk_level"]
+            elif "risk_category" in data and "risk_level" not in data:
+                data["risk_level"] = data["risk_category"]
+
+            # Sync remarks and explanation
+            if "remarks" in data and "explanation" not in data:
+                data["explanation"] = data["remarks"]
+            elif "explanation" in data and "remarks" not in data:
+                data["remarks"] = data["explanation"]
+        return data
 
 
 class AnomalyResult(BaseModel):

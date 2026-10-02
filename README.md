@@ -100,9 +100,10 @@ AI-Loan-Underwriting-Assistant/
 │   │   └── evaluator.py            # EligibilityEvaluator and aggregation logic
 │   ├── risk/                       # Risk modeling and scoring logic
 │   │   ├── __init__.py
-│   │   ├── rules.py                # Deterministic underwriting rule checks
-│   │   ├── scoring.py              # Normalized risk scoring engine
-│   │   └── risk_model.py           # Machine-learning default prediction wrapper
+│   │   ├── features.py             # Feature engineering & amortization math
+│   │   ├── rules.py                # Deterministic risk & protective factor rules
+│   │   ├── scoring.py              # Baseline weighted risk scoring engine
+│   │   └── risk_model.py           # RandomForestClassifier ML risk model wrapper
 │   ├── fraud/                      # Inconsistency and anomaly detection
 │   │   ├── __init__.py
 │   │   └── anomaly_detection.py    # Cross-document mismatch detector
@@ -115,6 +116,9 @@ AI-Loan-Underwriting-Assistant/
 │   └── utils/                      # Shared helper utilities
 │       ├── __init__.py
 │       └── helpers.py              # Centralized logging configuration
+├── models/                         # Serialized ML model artifacts & metadata
+│   ├── risk_model.joblib           # Trained RandomForestClassifier
+│   └── risk_model_metadata.json    # Hyper-parameters & feature importances
 ├── data/
 │   ├── applicants/                 # Applicant JSON/metadata profiles
 │   ├── documents/                  # Raw input PDFs and scanned images
@@ -292,7 +296,7 @@ pytest
 - **Stage 2 — Synthetic Dataset & Test Documents**: COMPLETE
 - **Stage 3 — Document Intelligence / Document Intake**: COMPLETE
 - **Stage 4 — Eligibility Agent**: COMPLETE
-- **Stage 5 — Risk Assessment Agent**: NEXT (Heuristic risk scoring and default prediction model training)
-- **Stage 6 — Fraud & Anomaly Detection Agent**: PLANNED (Cross-document consistency and anomaly heuristics)
+- **Stage 5 — Risk Assessment Agent**: COMPLETE
+- **Stage 6 — Fraud & Anomaly Detection Agent**: NEXT (Cross-document consistency and anomaly heuristics)
 - **Stage 7 — Multi-Agent Orchestrator**: PLANNED (Workflow coordination and decision synthesis)
 - **Stage 8 — Decision & Reasoning Agent / Dashboard**: PLANNED (Loan officer dashboard and audit trail)
