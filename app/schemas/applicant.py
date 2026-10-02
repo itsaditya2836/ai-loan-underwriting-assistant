@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.anomaly import AnomalyFlag, AnomalyResult, AnomalySeverity
+
 
 class EmploymentType(str, Enum):
     """Permitted applicant employment categories."""
@@ -338,29 +340,6 @@ class RiskResult(BaseModel):
         return data
 
 
-class AnomalyResult(BaseModel):
-    """Structured output from the Fraud and Anomaly Detection Agent."""
-
-    has_anomalies: bool = Field(
-        default=False, description="Flag indicating if any anomalies were detected"
-    )
-    anomalies_detected: List[str] = Field(
-        default_factory=list,
-        description="Descriptions of inconsistencies found across documents",
-    )
-    confidence_score: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0, description="Model or heuristic confidence score"
-    )
-    flagged_items: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="Detailed flagged inconsistencies with context",
-    )
-    remarks: Optional[str] = Field(
-        default=None,
-        description="Summary observations regarding application authenticity",
-    )
-
-
 class DecisionResult(BaseModel):
     """Structured synthesis output from the Decision & Reasoning Agent."""
 
@@ -470,3 +449,21 @@ class DocumentPackageResult(BaseModel):
         default_factory=dict,
         description="Flat aggregated key-value map of all extracted fields across documents",
     )
+
+
+__all__ = [
+    "EmploymentType",
+    "RecommendationType",
+    "RiskLevel",
+    "Applicant",
+    "Document",
+    "EligibilityResult",
+    "RiskResult",
+    "DecisionResult",
+    "AnomalyFlag",
+    "AnomalyResult",
+    "AnomalySeverity",
+    "ExtractedField",
+    "ClassifiedDocument",
+    "DocumentPackageResult",
+]
