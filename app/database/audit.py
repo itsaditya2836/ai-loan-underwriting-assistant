@@ -30,6 +30,9 @@ _EXTRA_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("consistency_conflicts_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("validation_warnings_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("details_snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("initiated_by_user_id", "TEXT"),
+    ("initiated_by_username", "TEXT"),
+    ("initiated_by_role", "TEXT"),
 )
 
 
@@ -93,7 +96,10 @@ def init_audit_table() -> None:
         agent_statuses_json TEXT NOT NULL DEFAULT '{}',
         consistency_conflicts_json TEXT NOT NULL DEFAULT '[]',
         validation_warnings_json TEXT NOT NULL DEFAULT '[]',
-        details_snapshot_json TEXT NOT NULL DEFAULT '{}'
+        details_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        initiated_by_user_id TEXT,
+        initiated_by_username TEXT,
+        initiated_by_role TEXT
     );
     """
     create_index_app_sql = """
@@ -104,6 +110,9 @@ def init_audit_table() -> None:
     """
     create_index_rec_sql = """
     CREATE INDEX IF NOT EXISTS idx_runs_recommendation ON underwriting_runs (recommendation);
+    """
+    create_index_init_sql = """
+    CREATE INDEX IF NOT EXISTS idx_runs_initiator ON underwriting_runs (initiated_by_user_id);
     """
 
     with get_database_connection() as conn:
@@ -121,6 +130,7 @@ def init_audit_table() -> None:
         cursor.execute(create_index_app_sql)
         cursor.execute(create_index_ts_sql)
         cursor.execute(create_index_rec_sql)
+        cursor.execute(create_index_init_sql)
         logger.info("Audit table 'underwriting_runs' initialized successfully.")
 
 
@@ -332,6 +342,9 @@ def save_underwriting_run(
     decision: DecisionReasoningResult,
     execution_time_ms: float = 0.0,
     run_id: Optional[str] = None,
+    initiated_by_user_id: Optional[str] = None,
+    initiated_by_username: Optional[str] = None,
+    initiated_by_role: Optional[str] = None,
 ) -> str:
     """Record an immutable underwriting analysis run into the SQLite audit trail."""
     init_audit_table()
@@ -408,6 +421,12 @@ def save_underwriting_run(
     conflicts = decision.consistency_conflicts or analysis.consistency_conflicts
     val_warnings = decision.validation_warnings or analysis.validation_warnings
     details_snapshot = _build_masked_details_snapshot(analysis, decision)
+    if initiated_by_user_id:
+        details_snapshot["initiated_by_user_id"] = initiated_by_user_id
+    if initiated_by_username:
+        details_snapshot["initiated_by_username"] = initiated_by_username
+    if initiated_by_role:
+        details_snapshot["initiated_by_role"] = initiated_by_role
 
     insert_sql = """
     INSERT INTO underwriting_runs (
@@ -440,8 +459,11 @@ def save_underwriting_run(
         agent_statuses_json,
         consistency_conflicts_json,
         validation_warnings_json,
-        details_snapshot_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        details_snapshot_json,
+        initiated_by_user_id,
+        initiated_by_username,
+        initiated_by_role
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
 
     with get_database_connection() as conn:
@@ -479,6 +501,9 @@ def save_underwriting_run(
                 _stable_json_dumps(conflicts),
                 _stable_json_dumps(val_warnings),
                 _stable_json_dumps(details_snapshot),
+                initiated_by_user_id,
+                initiated_by_username,
+                initiated_by_role,
             ),
         )
         logger.info(
@@ -496,6 +521,9 @@ def save_underwriting_run_safe(
     decision: DecisionReasoningResult,
     execution_time_ms: float = 0.0,
     run_id: Optional[str] = None,
+    initiated_by_user_id: Optional[str] = None,
+    initiated_by_username: Optional[str] = None,
+    initiated_by_role: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Persist audit run without masking persistence failures behind exceptions.
 
@@ -508,6 +536,9 @@ def save_underwriting_run_safe(
             decision=decision,
             execution_time_ms=execution_time_ms,
             run_id=run_id,
+            initiated_by_user_id=initiated_by_user_id,
+            initiated_by_username=initiated_by_username,
+            initiated_by_role=initiated_by_role,
         )
         return saved_id, None
     except Exception as exc:
@@ -529,6 +560,7 @@ def get_audit_runs(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     application_id_prefix: Optional[str] = None,
+    initiated_by_user_id: Optional[str] = None,
     limit: int = 200,
 ) -> List[Dict[str, Any]]:
     """Retrieve filtered historical underwriting runs from the audit database."""
@@ -561,6 +593,9 @@ def get_audit_runs(
     if end_date:
         query += " AND substr(timestamp, 1, 10) <= ?"
         params.append(end_date)
+    if initiated_by_user_id:
+        query += " AND initiated_by_user_id = ?"
+        params.append(initiated_by_user_id)
 
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)

@@ -40,6 +40,8 @@ STATE_PENDING_CLEAR_INTAKE = "_ui_pending_clear_intake"
 STATE_PENDING_GEN_APP_ID = "_ui_pending_gen_app_id"
 STATE_PENDING_LOAD_INTAKE = "_ui_pending_load_intake"
 STATE_LAST_REVIEW_RECEIPT = "ui_last_review_receipt"
+STATE_AUTH_ACCESS_TOKEN = "ui_auth_access_token"
+STATE_AUTH_REFRESH_TOKEN = "ui_auth_refresh_token"
 
 
 def default_intake_draft(applicant_id: str = "") -> Dict[str, Any]:
@@ -223,3 +225,34 @@ def get_live_result(applicant_id: Optional[str]) -> Optional[Dict[str, Any]]:
 def get_staged_uploads() -> List[Dict[str, Any]]:
     """Return current session staged upload entries."""
     return list(st.session_state.get(STATE_STAGED_UPLOADS, []))
+
+
+def get_authenticated_ui_user() -> Optional[Any]:
+    """Verify the session access token via AuthService and return the active User or None."""
+    token = st.session_state.get(STATE_AUTH_ACCESS_TOKEN)
+    if not token:
+        return None
+    try:
+        from app.auth.service import AuthenticationError, AuthService
+
+        auth = AuthService()
+        return auth.get_current_user(str(token))
+    except AuthenticationError:
+        st.session_state.pop(STATE_AUTH_ACCESS_TOKEN, None)
+        return None
+    except Exception:
+        return None
+
+
+def logout_ui_session() -> None:
+    """Revoke refresh tokens and clear UI session authentication tokens."""
+    user = get_authenticated_ui_user()
+    if user is not None:
+        try:
+            from app.auth.service import AuthService
+
+            AuthService().logout(user.user_id)
+        except Exception:
+            pass
+    st.session_state.pop(STATE_AUTH_ACCESS_TOKEN, None)
+    st.session_state.pop(STATE_AUTH_REFRESH_TOKEN, None)

@@ -14,3 +14,9 @@ pytest
 black
 ruff
 reportlab
+python-jose[cryptography]
+argon2-cffi
+python-multipart
+sqlalchemy>=2.0
+alembic
+httpx2

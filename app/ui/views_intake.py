@@ -38,6 +38,7 @@ from app.ui.state import (
     STATE_UPLOAD_COUNTER,
     clear_intake_after_submission,
     default_intake_draft,
+    get_authenticated_ui_user,
     navigate_to,
     queue_new_applicant_ref,
     store_live_result,
@@ -528,6 +529,19 @@ def render_new_application_view() -> None:
             st.error("Fix validation errors before submitting.")
             return
 
+        auth_user = get_authenticated_ui_user()
+        if auth_user is not None:
+            from app.auth.permissions import Permission, check_permission
+
+            if not (
+                check_permission(auth_user.role, Permission.APPLICANT_CREATE)
+                and check_permission(auth_user.role, Permission.UNDERWRITING_INITIATE)
+            ):
+                st.error(
+                    f"Role '{auth_user.role.value}' is not authorized to submit and run underwriting applications."
+                )
+                return
+
         st.session_state[STATE_SUBMISSION_IN_PROGRESS] = True
         try:
             with st.spinner(
@@ -538,6 +552,9 @@ def render_new_application_view() -> None:
                     staged_uploads=staged,
                     use_existing_package_if_empty=False,
                     allow_duplicate=allow_dup,
+                    submitted_by_user_id=auth_user.user_id if auth_user else None,
+                    submitted_by_username=auth_user.username if auth_user else None,
+                    submitted_by_role=auth_user.role.value if auth_user else None,
                 )
         except Exception as exc:
             st.session_state[STATE_SUBMISSION_IN_PROGRESS] = False

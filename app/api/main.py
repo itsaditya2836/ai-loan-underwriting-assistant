@@ -1,0 +1,111 @@
+"""FastAPI application entry point.
+
+Creates the versioned API application with CORS, lifespan initialization,
+and all /api/v1 route registrations.
+
+Launch:
+    uvicorn app.api.main:app --reload --port 8000
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.dependencies import get_auth_service
+from app.api.routes import (
+    applicants,
+    audit,
+    auth,
+    documents,
+    integrations,
+    reviews,
+    underwriting,
+    users,
+)
+from app.database import init_db
+from app.utils.helpers import get_logger, setup_logging
+from config.settings import get_settings
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application startup and shutdown lifecycle."""
+    setup_logging()
+    settings = get_settings()
+    logger.info("Starting API server in '%s' mode.", settings.app_env)
+
+    # Initialize legacy SQLite tables (underwriting_runs, etc.)
+    init_db()
+
+    # Initialize auth tables + seed default admin
+    auth_svc = get_auth_service()
+    seeded = auth_svc.seed_default_admin()
+    if seeded:
+        logger.info(
+            "Default admin user seeded (username='admin'). "
+            "Change the password immediately in production."
+        )
+
+    yield  # Application is running
+
+    logger.info("API server shutting down.")
+
+
+def create_app() -> FastAPI:
+    """Factory function creating the configured FastAPI application."""
+    settings = get_settings()
+
+    application = FastAPI(
+        title="AI Loan Underwriting Assistant API",
+        description="Backend API for the AI Loan Underwriting Assistant with authentication, RBAC, and audit.",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/api/docs" if settings.app_env == "development" else None,
+        redoc_url="/api/redoc" if settings.app_env == "development" else None,
+    )
+
+    # CORS (permissive for development; restrict in production)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if settings.app_env == "development" else [],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Register versioned route groups
+    application.include_router(
+        auth.router, prefix="/api/v1/auth", tags=["Authentication"]
+    )
+    application.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
+    application.include_router(
+        applicants.router, prefix="/api/v1/applicants", tags=["Applicants"]
+    )
+    application.include_router(
+        documents.router, prefix="/api/v1/applicants", tags=["Documents"]
+    )
+    application.include_router(
+        underwriting.router, prefix="/api/v1/underwriting", tags=["Underwriting"]
+    )
+    application.include_router(
+        reviews.router, prefix="/api/v1/reviews", tags=["Reviews"]
+    )
+    application.include_router(audit.router, prefix="/api/v1/audit", tags=["Audit"])
+    application.include_router(
+        integrations.router, prefix="/api/v1/integrations", tags=["Integrations"]
+    )
+
+    @application.get("/api/v1/health", tags=["Health"])
+    async def health_check() -> dict:
+        return {"status": "ok", "version": "1.0.0"}
+
+    return application
+
+
+app = create_app()

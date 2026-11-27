@@ -42,6 +42,7 @@ from app.ui.state import (
     STATE_LAST_REVIEW_RECEIPT,
     STATE_SELECTED_APP_ID,
     STATE_SELECTED_RUN_ID,
+    get_authenticated_ui_user,
     navigate_to,
     queue_existing_applicant_for_intake,
 )
@@ -90,6 +91,19 @@ def render_underwriter_review_queue_view() -> None:
         "Review AI underwriting recommendations, inspect evidence and conflicts, and record separate "
         "append-only human underwriter decisions. Original AI recommendations and pipeline analyses are never altered."
     )
+
+    auth_user = get_authenticated_ui_user()
+    if auth_user is not None:
+        from app.auth.permissions import Permission, check_permission
+
+        if not (
+            check_permission(auth_user.role, Permission.REVIEW_VIEW_ASSIGNED)
+            or check_permission(auth_user.role, Permission.REVIEW_VIEW_ALL)
+        ):
+            st.error(
+                f"Access denied: role '{auth_user.role.value}' is not authorized to access the Underwriter Review Queue."
+            )
+            return
 
     _render_review_receipt()
 
@@ -247,26 +261,37 @@ def render_underwriter_review_queue_view() -> None:
     render_human_vs_ai_summary_panel(case_summary)
 
     cur_rev_status = case_summary["human_review_status"]
+    auth_user = get_authenticated_ui_user()
     if cur_rev_status == ReviewStatus.PENDING.value:
         with st.expander(
             "Claim Case Into Active Review (`PENDING` → `IN_REVIEW`)", expanded=False
         ):
-            claim_rev = st.text_input(
-                "Reviewer Identifier *",
-                value="underwriter_01",
-                key=f"rq_claim_reviewer_{run_id}",
-            )
-            if st.button("Mark Case In Review", key=f"rq_btn_claim_{run_id}"):
-                res_claim = submit_human_review_safe(
-                    {
-                        "source_run_id": run_id,
-                        "application_id": selected_case_id,
-                        "action": HumanReviewAction.START_REVIEW.value,
-                        "reviewer_id": claim_rev,
-                        "decision_reason": "Case claimed by underwriter for detailed review.",
-                        "confirmed": True,
-                    }
+            if auth_user is not None:
+                st.caption(
+                    f"Authenticated Reviewer: `{auth_user.username}` (`{auth_user.role.value}`)"
                 )
+                claim_rev = f"{auth_user.username} ({auth_user.user_id})"
+            else:
+                claim_rev = st.text_input(
+                    "Reviewer Identifier *",
+                    value="underwriter_01",
+                    key=f"rq_claim_reviewer_{run_id}",
+                )
+            if st.button("Mark Case In Review", key=f"rq_btn_claim_{run_id}"):
+                claim_payload: Dict[str, Any] = {
+                    "source_run_id": run_id,
+                    "application_id": selected_case_id,
+                    "action": HumanReviewAction.START_REVIEW.value,
+                    "reviewer_id": claim_rev,
+                    "expected_previous_status": cur_rev_status,
+                    "decision_reason": "Case claimed by underwriter for detailed review.",
+                    "confirmed": True,
+                }
+                if auth_user is not None:
+                    claim_payload["reviewer_user_id"] = auth_user.user_id
+                    claim_payload["reviewer_username"] = auth_user.username
+                    claim_payload["reviewer_role"] = auth_user.role.value
+                res_claim = submit_human_review_safe(claim_payload)
                 if res_claim["saved"]:
                     ev = res_claim["event"]
                     st.session_state[STATE_LAST_REVIEW_RECEIPT] = ev
@@ -515,12 +540,22 @@ def _render_additional_info_followup_box(
         "To process newly uploaded documents, use New Application or explicitly re-run underwriting."
     )
 
+    auth_user = get_authenticated_ui_user()
     f1, f2 = st.columns([1, 2])
-    ret_rev_id = f1.text_input(
-        "Attribution Reviewer / Handler ID *",
-        value=latest.get("reviewer_id") or "underwriter_01",
-        key=f"rq_return_handler_{source_run_id}",
-    )
+    if auth_user is not None:
+        f1.text_input(
+            "Authenticated Handler (Verified Session)",
+            value=f"{auth_user.username} ({auth_user.role.value})",
+            disabled=True,
+            key=f"rq_auth_return_handler_{source_run_id}",
+        )
+        ret_rev_id = f"{auth_user.username} ({auth_user.user_id})"
+    else:
+        ret_rev_id = f1.text_input(
+            "Attribution Reviewer / Handler ID *",
+            value=latest.get("reviewer_id") or "underwriter_01",
+            key=f"rq_return_handler_{source_run_id}",
+        )
     ret_notes = f2.text_input(
         "Additional Info Received / Follow-Up Notes *",
         value="",
@@ -540,6 +575,9 @@ def _render_additional_info_followup_box(
                 reviewer_id=ret_rev_id,
                 info_response=ret_notes,
                 reason=f"Returned from {cur_status} to PENDING queue after follow-up.",
+                reviewer_user_id=auth_user.user_id if auth_user else None,
+                reviewer_username=auth_user.username if auth_user else None,
+                reviewer_role=auth_user.role.value if auth_user else None,
             )
             if res["saved"]:
                 st.session_state[STATE_LAST_REVIEW_RECEIPT] = res["event"]
@@ -604,13 +642,23 @@ def _render_human_decision_form(
         key=f"rq_action_{source_run_id}",
     )
     selected_action = _ACTION_UI_LABELS[action_label]
-    reviewer_id = c2.text_input(
-        "Reviewer Identifier (Attribution Only) *",
-        value="",
-        max_chars=64,
-        key=f"rq_reviewer_id_{source_run_id}",
-        placeholder="e.g., UW_SHARMA_01",
-    )
+    auth_user = get_authenticated_ui_user()
+    if auth_user is not None:
+        c2.text_input(
+            "Authenticated Reviewer (Verified Session)",
+            value=f"{auth_user.username} ({auth_user.role.value})",
+            disabled=True,
+            key=f"rq_auth_reviewer_{source_run_id}",
+        )
+        reviewer_id = f"{auth_user.username} ({auth_user.user_id})"
+    else:
+        reviewer_id = c2.text_input(
+            "Reviewer Identifier (Attribution Only) *",
+            value="",
+            max_chars=64,
+            key=f"rq_reviewer_id_{source_run_id}",
+            placeholder="e.g., UW_SHARMA_01",
+        )
 
     decision_reason = st.text_input(
         "Mandatory Decision Reason *",
@@ -660,11 +708,60 @@ def _render_human_decision_form(
         key=f"rq_btn_submit_{source_run_id}",
         width="stretch",
     ):
+        if auth_user is not None:
+            from app.auth.permissions import (
+                MakerCheckerError,
+                Permission,
+                check_permission,
+                enforce_correction_requires_supervisor,
+                enforce_not_self_review,
+            )
+            from app.database.applications import get_submitted_application
+            from app.database.audit import get_audit_run_by_id
+
+            if not check_permission(auth_user.role, Permission.REVIEW_SUBMIT_DECISION):
+                st.error(
+                    f"Role '{auth_user.role.value}' is not authorized to submit review decisions."
+                )
+                return
+            if is_correction:
+                try:
+                    enforce_correction_requires_supervisor(auth_user.role)
+                except MakerCheckerError as exc:
+                    st.error(str(exc))
+                    return
+            run_row_mc = get_audit_run_by_id(source_run_id)
+            if run_row_mc:
+                try:
+                    enforce_not_self_review(
+                        auth_user.user_id,
+                        run_row_mc.get("initiated_by_user_id"),
+                        operation="review their own underwriting submission",
+                    )
+                except MakerCheckerError as exc:
+                    st.error(str(exc))
+                    return
+            app_row_mc = get_submitted_application(application_id)
+            if app_row_mc:
+                try:
+                    enforce_not_self_review(
+                        auth_user.user_id,
+                        app_row_mc.get("submitted_by_user_id"),
+                        operation="approve or review their own submitted application",
+                    )
+                except MakerCheckerError as exc:
+                    st.error(str(exc))
+                    return
+
         payload: Dict[str, Any] = {
             "source_run_id": source_run_id,
             "application_id": application_id,
             "action": selected_action.value,
             "reviewer_id": reviewer_id,
+            "reviewer_user_id": auth_user.user_id if auth_user else None,
+            "reviewer_username": auth_user.username if auth_user else None,
+            "reviewer_role": auth_user.role.value if auth_user else None,
+            "expected_previous_status": cur_status,
             "decision_reason": decision_reason,
             "comments": comments,
             "additional_info_request": add_info_req,
@@ -707,6 +804,7 @@ def _render_case_review_timeline(case_summary: Dict[str, Any]) -> None:
                 "Transition": f"{ev['previous_review_status']} → {ev['new_review_status']}",
                 "Human Decision": ev.get("human_decision") or "Not yet recorded",
                 "Reviewer ID": ev["reviewer_id"],
+                "Reviewer Role": ev.get("reviewer_role") or "Attribution Only",
                 "Reason": ev["decision_reason"],
                 "Correction?": (
                     f"Yes (Parent: {ev.get('parent_review_id')})"

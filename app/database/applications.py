@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.database.db import get_database_connection
 from app.schemas.applicant import Applicant
 from app.utils.helpers import get_logger
 
 logger = get_logger(__name__)
+
+_APPLICATION_EXTRA_COLUMNS: Tuple[Tuple[str, str], ...] = (
+    ("submitted_by_user_id", "TEXT"),
+    ("submitted_by_username", "TEXT"),
+    ("submitted_by_role", "TEXT"),
+)
 
 
 def init_applications_table() -> None:
@@ -35,7 +41,10 @@ def init_applications_table() -> None:
         uploaded_files_json TEXT NOT NULL DEFAULT '[]',
         validation_warnings_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        submitted_by_user_id TEXT,
+        submitted_by_username TEXT,
+        submitted_by_role TEXT
     );
     """
     idx_updated_sql = """
@@ -46,11 +55,23 @@ def init_applications_table() -> None:
     CREATE INDEX IF NOT EXISTS idx_submitted_apps_hash
     ON submitted_applications (submission_hash);
     """
+    idx_submitter_sql = """
+    CREATE INDEX IF NOT EXISTS idx_submitted_apps_submitter
+    ON submitted_applications (submitted_by_user_id);
+    """
     with get_database_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(create_sql)
+        cursor.execute("PRAGMA table_info(submitted_applications);")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _APPLICATION_EXTRA_COLUMNS:
+            if col_name not in existing_cols:
+                cursor.execute(
+                    f"ALTER TABLE submitted_applications ADD COLUMN {col_name} {col_def};"
+                )
         cursor.execute(idx_updated_sql)
         cursor.execute(idx_hash_sql)
+        cursor.execute(idx_submitter_sql)
 
 
 def _row_to_application_dict(row: Any) -> Dict[str, Any]:
@@ -86,6 +107,9 @@ def _row_to_application_dict(row: Any) -> Dict[str, Any]:
             "validation_warnings": warnings,
             "created_at": d["created_at"],
             "updated_at": d["updated_at"],
+            "submitted_by_user_id": d.get("submitted_by_user_id"),
+            "submitted_by_username": d.get("submitted_by_username"),
+            "submitted_by_role": d.get("submitted_by_role"),
             "source": "submitted",
         }
     )
@@ -99,6 +123,9 @@ def save_submitted_application(
     application_status: str = "SUBMITTED",
     latest_run_id: Optional[str] = None,
     validation_warnings: Optional[List[str]] = None,
+    submitted_by_user_id: Optional[str] = None,
+    submitted_by_username: Optional[str] = None,
+    submitted_by_role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Insert or update a persisted applicant submission record."""
     init_applications_table()
@@ -126,8 +153,11 @@ def save_submitted_application(
         uploaded_files_json,
         validation_warnings_json,
         created_at,
-        updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        updated_at,
+        submitted_by_user_id,
+        submitted_by_username,
+        submitted_by_role
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(applicant_id) DO UPDATE SET
         name = excluded.name,
         employment_type = excluded.employment_type,
@@ -141,7 +171,10 @@ def save_submitted_application(
         applicant_json = excluded.applicant_json,
         uploaded_files_json = excluded.uploaded_files_json,
         validation_warnings_json = excluded.validation_warnings_json,
-        updated_at = excluded.updated_at;
+        updated_at = excluded.updated_at,
+        submitted_by_user_id = COALESCE(excluded.submitted_by_user_id, submitted_applications.submitted_by_user_id),
+        submitted_by_username = COALESCE(excluded.submitted_by_username, submitted_applications.submitted_by_username),
+        submitted_by_role = COALESCE(excluded.submitted_by_role, submitted_applications.submitted_by_role);
     """
     with get_database_connection() as conn:
         cursor = conn.cursor()
@@ -163,6 +196,9 @@ def save_submitted_application(
                 warnings_payload,
                 created_at,
                 now_utc,
+                submitted_by_user_id,
+                submitted_by_username,
+                submitted_by_role,
             ),
         )
 
@@ -189,15 +225,22 @@ def get_submitted_application(applicant_id: str) -> Optional[Dict[str, Any]]:
         return _row_to_application_dict(row) if row else None
 
 
-def list_submitted_applications(limit: int = 500) -> List[Dict[str, Any]]:
+def list_submitted_applications(
+    limit: int = 500,
+    submitted_by_user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """List submitted application records ordered by most recently updated."""
     init_applications_table()
+    query = "SELECT * FROM submitted_applications WHERE 1=1"
+    params: List[Any] = []
+    if submitted_by_user_id:
+        query += " AND submitted_by_user_id = ?"
+        params.append(submitted_by_user_id)
+    query += " ORDER BY updated_at DESC LIMIT ?;"
+    params.append(limit)
     with get_database_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM submitted_applications ORDER BY updated_at DESC LIMIT ?;",
-            (limit,),
-        )
+        cursor.execute(query, params)
         return [_row_to_application_dict(r) for r in cursor.fetchall()]
 
 

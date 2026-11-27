@@ -38,10 +38,14 @@ from app.ui.services import (
 )
 from app.ui.state import (
     NAV_PAGES,
+    STATE_AUTH_ACCESS_TOKEN,
+    STATE_AUTH_REFRESH_TOKEN,
     STATE_CURRENT_PAGE,
     STATE_SELECTED_APP_ID,
     apply_pending_state_transitions,
+    get_authenticated_ui_user,
     init_session_state,
+    logout_ui_session,
 )
 from app.ui.views_intake import render_new_application_view
 from app.ui.views_portfolio import (
@@ -55,6 +59,7 @@ from app.ui.views_results import (
     render_underwriting_results_view,
 )
 from app.ui.views_review import render_underwriter_review_queue_view
+from config.settings import get_settings
 
 
 @st.cache_data
@@ -125,6 +130,51 @@ def configure_page() -> None:
     )
 
 
+def _render_sidebar_auth_widget() -> Optional[Any]:
+    """Render optional RBAC session sign-in/sign-out panel in the sidebar."""
+    auth_user = get_authenticated_ui_user()
+    settings = get_settings()
+
+    with st.sidebar:
+        st.markdown("### Access & Identity")
+        if auth_user is not None:
+            st.success(
+                f"Signed in: **{auth_user.username}**\n\nRole: `{auth_user.role.value}`"
+            )
+            if st.button("Sign Out", key="ui_btn_sign_out", width="stretch"):
+                logout_ui_session()
+                st.rerun()
+        else:
+            mode_label = (
+                "Sign In Required"
+                if settings.streamlit_auth_required
+                else "Sign In (Optional RBAC)"
+            )
+            with st.expander(
+                mode_label, expanded=bool(settings.streamlit_auth_required)
+            ):
+                uname = st.text_input("Username", key="ui_login_username")
+                pwd = st.text_input(
+                    "Password", type="password", key="ui_login_password"
+                )
+                if st.button("Sign In", key="ui_btn_sign_in", width="stretch"):
+                    try:
+                        from app.auth.service import AuthenticationError, AuthService
+
+                        auth_svc = AuthService()
+                        auth_svc.init_tables()
+                        auth_svc.seed_default_admin()
+                        tokens = auth_svc.login(uname, pwd)
+                        st.session_state[STATE_AUTH_ACCESS_TOKEN] = tokens.access_token
+                        st.session_state[STATE_AUTH_REFRESH_TOKEN] = (
+                            tokens.refresh_token
+                        )
+                        st.rerun()
+                    except AuthenticationError as exc:
+                        st.error(str(exc))
+    return auth_user
+
+
 def render_dashboard() -> None:
     """Render the complete Stage 5 Streamlit application controller."""
     init_db()
@@ -140,6 +190,14 @@ def render_dashboard() -> None:
         '<div class="sub-header">Deterministic Multi-Agent Underwriting Workbench & Explainable Audit Ledger</div>',
         unsafe_allow_html=True,
     )
+
+    auth_user = _render_sidebar_auth_widget()
+    if get_settings().streamlit_auth_required and auth_user is None:
+        st.info(
+            "Authentication is required (`STREAMLIT_AUTH_REQUIRED=true`). "
+            "Please sign in using the sidebar Access & Identity panel."
+        )
+        return
 
     catalog = load_applicant_catalog()
     app_ids = [rec["applicant_id"] for rec in catalog]

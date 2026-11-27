@@ -100,6 +100,10 @@ class HumanReviewSubmission(BaseModel):
     application_id: str = Field(..., min_length=1)
     action: HumanReviewAction
     reviewer_id: str = Field(..., min_length=2, max_length=64)
+    reviewer_user_id: Optional[str] = Field(default=None, max_length=64)
+    reviewer_username: Optional[str] = Field(default=None, max_length=64)
+    reviewer_role: Optional[str] = Field(default=None, max_length=32)
+    expected_previous_status: Optional[ReviewStatus] = Field(default=None)
     decision_reason: str = Field(..., min_length=5, max_length=500)
     comments: Optional[str] = Field(default=None, max_length=2000)
     additional_info_request: Optional[str] = Field(default=None, max_length=1000)
@@ -126,6 +130,9 @@ class HumanReviewEvent(BaseModel):
         description="Final human lending outcome (APPROVE or REJECT) ONLY when terminal decision issued; None otherwise.",
     )
     reviewer_id: str
+    reviewer_user_id: Optional[str] = None
+    reviewer_username: Optional[str] = None
+    reviewer_role: Optional[str] = None
     decision_reason: str
     comments: Optional[str] = None
     additional_info_request: Optional[str] = None

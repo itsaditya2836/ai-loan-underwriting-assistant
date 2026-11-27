@@ -22,6 +22,7 @@ from app.database.audit import (
     get_latest_runs_per_application,
 )
 from app.database.reviews import (
+    ConcurrentReviewConflictError,
     find_duplicate_review_submission,
     get_human_review_by_id,
     get_latest_review_for_application,
@@ -44,7 +45,7 @@ from app.utils.helpers import get_logger
 
 logger = get_logger(__name__)
 
-_REVIEWER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._ -]{2,64}$")
+_REVIEWER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._() -]{2,64}$")
 MAX_COMMENTS_LENGTH = 2000
 MAX_REASON_LENGTH = 500
 MAX_DETAIL_LENGTH = 1000
@@ -264,6 +265,21 @@ def validate_and_prepare_review_event(
         if latest_review is not None
         else ReviewStatus.PENDING
     )
+
+    # Optimistic concurrency guard: fail if caller expected a different review status
+    expected_prev_raw = raw.get("expected_previous_status")
+    if expected_prev_raw is not None:
+        expected_prev = (
+            expected_prev_raw
+            if isinstance(expected_prev_raw, ReviewStatus)
+            else ReviewStatus(str(expected_prev_raw))
+        )
+        if prev_status != expected_prev:
+            raise ConcurrentReviewConflictError(
+                f"Optimistic concurrency check failed on run '{source_run_id}': "
+                f"expected status '{expected_prev.value}', found '{prev_status.value}'."
+            )
+
     target_status = ACTION_TO_TARGET_STATUS[action]
 
     is_correction = bool(raw.get("is_correction", False))
@@ -294,6 +310,10 @@ def validate_and_prepare_review_event(
         # MUST NOT be treated as approvals or rejections.
         human_decision = None
 
+    reviewer_user_id = _sanitize_text(raw.get("reviewer_user_id"))
+    reviewer_username = _sanitize_text(raw.get("reviewer_username"))
+    reviewer_role = _sanitize_text(raw.get("reviewer_role"))
+
     event_payload = {
         "source_run_id": source_run_id,
         "application_id": application_id,
@@ -303,6 +323,9 @@ def validate_and_prepare_review_event(
         "action": action.value,
         "human_decision": human_decision,
         "reviewer_id": reviewer_id,
+        "reviewer_user_id": reviewer_user_id,
+        "reviewer_username": reviewer_username,
+        "reviewer_role": reviewer_role,
         "decision_reason": decision_reason,
         "comments": comments,
         "additional_info_request": add_info_req,
@@ -346,6 +369,7 @@ def submit_human_review_safe(
         return {
             "saved": True,
             "duplicate_blocked": False,
+            "conflict": False,
             "event": saved,
             "error": None,
         }
@@ -353,6 +377,15 @@ def submit_human_review_safe(
         return {
             "saved": False,
             "duplicate_blocked": True,
+            "conflict": False,
+            "event": None,
+            "error": str(exc),
+        }
+    except ConcurrentReviewConflictError as exc:
+        return {
+            "saved": False,
+            "duplicate_blocked": False,
+            "conflict": True,
             "event": None,
             "error": str(exc),
         }
@@ -360,6 +393,7 @@ def submit_human_review_safe(
         return {
             "saved": False,
             "duplicate_blocked": False,
+            "conflict": False,
             "event": None,
             "error": str(exc),
         }
@@ -368,6 +402,7 @@ def submit_human_review_safe(
         return {
             "saved": False,
             "duplicate_blocked": False,
+            "conflict": False,
             "event": None,
             "error": f"Database persistence failed: {exc}",
         }
@@ -380,6 +415,9 @@ def record_additional_info_return(
     reviewer_id: str,
     info_response: str,
     reason: Optional[str] = None,
+    reviewer_user_id: Optional[str] = None,
+    reviewer_username: Optional[str] = None,
+    reviewer_role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return an ADDITIONAL_INFO_REQUESTED / INVESTIGATION_REQUIRED case cleanly to PENDING without rerunning AI."""
     clean_resp = _sanitize_text(info_response, mask=True)
@@ -387,6 +425,7 @@ def record_additional_info_return(
         return {
             "saved": False,
             "duplicate_blocked": False,
+            "conflict": False,
             "event": None,
             "error": "Please provide additional information summary/details (at least 5 characters) before returning case to queue.",
         }
@@ -395,6 +434,9 @@ def record_additional_info_return(
         application_id=application_id,
         action=HumanReviewAction.RETURN_TO_PENDING,
         reviewer_id=reviewer_id,
+        reviewer_user_id=reviewer_user_id,
+        reviewer_username=reviewer_username,
+        reviewer_role=reviewer_role,
         decision_reason=reason
         or "Additional requested information recorded; returned to pending review queue.",
         additional_info_response=clean_resp,

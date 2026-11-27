@@ -58,14 +58,14 @@ Orchestrator Agent
 
 - **Programming Language**: Python 3.11+
 - **Environment**: Python Virtual Environment (`.venv`)
-- **Frontend / Dashboard**: Streamlit (`app/ui/dashboard.py` launched via `app/main.py`)
-- **Backend / API**: In-process Python orchestration (`FastAPI` and `uvicorn` are listed as dependencies for a planned future REST API, not yet implemented)
+- **Frontend / Dashboard**: Streamlit (`app/ui/dashboard.py` launched via `app/main.py`) with optional session RBAC sign-in
+- **Backend / API**: Versioned FastAPI REST backend under `/api/v1` (`app/api/main.py` via `uvicorn`), Argon2id + JWT authentication & RBAC
 - **Data Processing**: Pandas, NumPy
 - **Machine Learning**: Scikit-learn
 - **Document Processing**: PyMuPDF (Fitz), Pillow
 - **OCR**: pytesseract
-- **LLM / Agents**: Deterministic local agents (Gemini integration via `GEMINI_API_KEY` is planned for future stages, not yet implemented)
-- **Database**: SQLite (prototype layer with future migration planned for PostgreSQL)
+- **LLM / Agents**: Deterministic local agents (pluggable `app/integrations/` adapters with sandbox/disabled local defaults)
+- **Database**: SQLite for local dev/testing; SQLAlchemy schema, connection pooling configuration & Alembic migrations prepared for PostgreSQL (`alembic/`, `app/database/`)
 - **Configuration**: python-dotenv & Pydantic BaseSettings
 - **Testing**: pytest
 - **Code Quality**: black, ruff
@@ -257,9 +257,30 @@ Launch the active Stage 9 Streamlit interactive review dashboard (`app/ui/dashbo
 
 *(Note: `frontend/streamlit_app.py` is an obsolete Stage 1 static mockup shell and is not the active application.)*
 
-### 3. FastAPI Backend Service (Planned — Not Yet Implemented)
+### 3. FastAPI Backend Service (Stage 7)
 
-No FastAPI application or HTTP endpoints exist in the current prototype; underwriting currently runs synchronously in-process. FastAPI (`fastapi` / `uvicorn` in `requirements.txt`) is planned for a future stage.
+Launch the authenticated REST API backend under `/api/v1`:
+
+```bash
+.venv/bin/uvicorn app.api.main:app --reload --port 8000
+```
+
+Interactive OpenAPI docs (available when `APP_ENV=development`): `http://127.0.0.1:8000/api/docs`
+
+- Supports JWT authentication (`/api/v1/auth/login`, `refresh`, `logout`, `me`), Admin user management (`/api/v1/users`), applicant & document upload APIs (`/api/v1/applicants`), underwriting execution (`/api/v1/underwriting`), RBAC + Maker-Checker human review endpoints (`/api/v1/reviews`), audit logs (`/api/v1/audit`), and external integration readiness (`/api/v1/integrations/status`).
+- See [`STAGE_7_BACKEND_AUTH_RBAC.md`](STAGE_7_BACKEND_AUTH_RBAC.md) for full architecture, permission matrix, secrets configuration, and Alembic / SQLite-to-PostgreSQL migration instructions.
+
+### 4. Non-Destructive Database Migrations (Alembic & SQLite → PostgreSQL)
+
+```bash
+# Apply additive Stage 7 auth/attribution schema migrations safely
+.venv/bin/alembic upgrade head
+
+# Non-destructively copy historical & auth rows to another SQLAlchemy database
+.venv/bin/python scripts/migrate_sqlite_to_postgres.py \
+    --source sqlite:///./loan_underwriting.db \
+    --target postgresql+psycopg://user:password@localhost:5432/loan_underwriting
+```
 
 ---
 
@@ -554,7 +575,7 @@ DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/python app/main.py
 ### Human-in-the-Loop, Attribution & Verification Commands
 
 - **Advisory AI + Separate Human Decision**: AI outputs remain read-only (`AI RECOMMENDATION`), while authorized human decisions persist separately in `human_review_events`.
-- **Attribution Notice**: Stage 6 `Reviewer ID` fields record attribution strings cleanly for audit traceability; real authentication and RBAC are scheduled for Stage 7.
+- **Attribution Notice**: In unauthenticated local prototype mode (`STREAMLIT_AUTH_REQUIRED=false`), Streamlit accepts attribution strings (`Reviewer ID`); via the FastAPI `/api/v1` backend or signed-in Streamlit sessions (`Access & Identity` sidebar panel / `STREAMLIT_AUTH_REQUIRED=true`), identity, role, and Maker-Checker rules are enforced server-side from verified tokens (detailed in [`STAGE_7_BACKEND_AUTH_RBAC.md`](STAGE_7_BACKEND_AUTH_RBAC.md)).
 - **Review, UI & Audit Tests**:
 
 ```bash
@@ -575,5 +596,7 @@ DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_human_re
 - **Stage 7 — Multi-Agent Orchestrator**: COMPLETE
 - **Stage 8 — Decision & Reasoning Agent**: COMPLETE
 - **Stage 9 — Dashboard & Audit Trail**: COMPLETE
+- **Stage 5–6 (App & HITL Audit) — Streamlit Workbench & Human Underwriter Review**: COMPLETE
+- **Stage 7 (Backend/Security) — FastAPI Backend, Auth, RBAC, Migrations & Integration Foundations**: COMPLETE (`STAGE_7_BACKEND_AUTH_RBAC.md`)
 
 

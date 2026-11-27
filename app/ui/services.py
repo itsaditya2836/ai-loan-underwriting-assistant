@@ -528,6 +528,9 @@ def submit_application_and_underwrite(
     staged_uploads: Optional[List[Dict[str, Any]]] = None,
     use_existing_package_if_empty: bool = False,
     allow_duplicate: bool = False,
+    submitted_by_user_id: Optional[str] = None,
+    submitted_by_username: Optional[str] = None,
+    submitted_by_role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run full validated Stage 4 underwriting workflow & persist application/audit safely.
 
@@ -602,6 +605,9 @@ def submit_application_and_underwrite(
         analysis=analysis,
         decision=decision,
         execution_time_ms=duration_ms,
+        initiated_by_user_id=submitted_by_user_id,
+        initiated_by_username=submitted_by_username,
+        initiated_by_role=submitted_by_role,
     )
     analysis.audit_run_id = run_id
     analysis.audit_persisted = run_id is not None and db_err is None
@@ -628,6 +634,9 @@ def submit_application_and_underwrite(
             application_status=app_status,
             latest_run_id=run_id,
             validation_warnings=val_warnings,
+            submitted_by_user_id=submitted_by_user_id,
+            submitted_by_username=submitted_by_username,
+            submitted_by_role=submitted_by_role,
         )
     except Exception as exc:
         app_persist_error = f"Application record persistence failed: {exc}"

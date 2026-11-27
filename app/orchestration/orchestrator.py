@@ -512,12 +512,21 @@ class UnderwritingOrchestrator:
         package_dir: Optional[str] = None,
         decision_agent: Optional["DecisionReasoningAgent"] = None,
         persist_audit: bool = True,
+        applicant: Optional[Applicant] = None,
+        initiated_by_user_id: Optional[str] = None,
+        initiated_by_username: Optional[str] = None,
+        initiated_by_role: Optional[str] = None,
     ) -> Tuple[UnderwritingAnalysisResult, "DecisionReasoningResult"]:
         """Execute full Steps 1-7 pipeline: analysis -> decision -> safe audit persistence."""
         from app.agents.decision_agent import DecisionReasoningAgent
         from app.database.audit import save_underwriting_run_safe
 
-        analysis = self.process(application_id=application_id, package_dir=package_dir)
+        if applicant is not None:
+            analysis = self.run_pipeline(applicant=applicant, package_dir=package_dir)
+        else:
+            analysis = self.process(
+                application_id=application_id, package_dir=package_dir
+            )
         dec_agent = decision_agent or DecisionReasoningAgent()
         decision = dec_agent.evaluate(analysis)
 
@@ -526,6 +535,9 @@ class UnderwritingOrchestrator:
                 analysis=analysis,
                 decision=decision,
                 execution_time_ms=float(analysis.total_duration_ms or 0.0),
+                initiated_by_user_id=initiated_by_user_id,
+                initiated_by_username=initiated_by_username,
+                initiated_by_role=initiated_by_role,
             )
             analysis.audit_run_id = run_id
             analysis.audit_persisted = run_id is not None and db_err is None

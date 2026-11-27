@@ -21,7 +21,14 @@ _REVIEW_EXTRA_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("original_pipeline_status", "TEXT NOT NULL DEFAULT 'UNKNOWN'"),
     ("additional_info_response", "TEXT"),
     ("event_type", "TEXT NOT NULL DEFAULT 'HUMAN_REVIEW_EVENT'"),
+    ("reviewer_user_id", "TEXT"),
+    ("reviewer_username", "TEXT"),
+    ("reviewer_role", "TEXT"),
 )
+
+
+class ConcurrentReviewConflictError(ValueError):
+    """Raised when optimistic concurrency detects another writer changed review state."""
 
 
 def init_reviews_table() -> None:
@@ -37,6 +44,9 @@ def init_reviews_table() -> None:
         action TEXT NOT NULL,
         human_decision TEXT,
         reviewer_id TEXT NOT NULL,
+        reviewer_user_id TEXT,
+        reviewer_username TEXT,
+        reviewer_role TEXT,
         decision_reason TEXT NOT NULL,
         comments TEXT,
         additional_info_request TEXT,
@@ -64,6 +74,10 @@ def init_reviews_table() -> None:
     CREATE INDEX IF NOT EXISTS idx_reviews_hash
     ON human_review_events (submission_hash);
     """
+    idx_user_sql = """
+    CREATE INDEX IF NOT EXISTS idx_reviews_user_id
+    ON human_review_events (reviewer_user_id);
+    """
     with get_database_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(create_sql)
@@ -77,6 +91,7 @@ def init_reviews_table() -> None:
         cursor.execute(idx_app_sql)
         cursor.execute(idx_run_sql)
         cursor.execute(idx_hash_sql)
+        cursor.execute(idx_user_sql)
 
 
 def _row_to_review_dict(row: Any) -> Dict[str, Any]:
@@ -110,6 +125,9 @@ def insert_human_review_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
         action,
         human_decision,
         reviewer_id,
+        reviewer_user_id,
+        reviewer_username,
+        reviewer_role,
         decision_reason,
         comments,
         additional_info_request,
@@ -123,16 +141,32 @@ def insert_human_review_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
         submission_hash,
         review_timestamp,
         event_type
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
+
+    source_run_id = str(event_data["source_run_id"])
+    expected_prev = str(event_data["previous_review_status"])
 
     with get_database_connection() as conn:
         cursor = conn.cursor()
+        # Acquire immediate write lock in SQLite to serialize concurrent review writers
+        cursor.execute("BEGIN IMMEDIATE;")
+        cursor.execute(
+            "SELECT new_review_status FROM human_review_events WHERE source_run_id = ? ORDER BY review_timestamp DESC, rowid DESC LIMIT 1;",
+            (source_run_id,),
+        )
+        cur_row = cursor.fetchone()
+        actual_prev = str(cur_row[0]) if cur_row is not None else "PENDING"
+        if actual_prev != expected_prev:
+            raise ConcurrentReviewConflictError(
+                f"Concurrent review conflict on run '{source_run_id}': status moved from "
+                f"'{expected_prev}' to '{actual_prev}' before commit."
+            )
         cursor.execute(
             insert_sql,
             (
                 review_id,
-                str(event_data["source_run_id"]),
+                source_run_id,
                 app_id,
                 str(event_data.get("applicant_id") or app_id),
                 str(event_data["original_ai_recommendation"]),
@@ -140,12 +174,15 @@ def insert_human_review_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
                 str(event_data["action"]),
                 event_data.get("human_decision"),
                 str(event_data["reviewer_id"]),
+                event_data.get("reviewer_user_id"),
+                event_data.get("reviewer_username"),
+                event_data.get("reviewer_role"),
                 str(event_data["decision_reason"]),
                 event_data.get("comments"),
                 event_data.get("additional_info_request"),
                 event_data.get("additional_info_response"),
                 event_data.get("investigation_instructions"),
-                str(event_data["previous_review_status"]),
+                expected_prev,
                 str(event_data["new_review_status"]),
                 1 if event_data.get("is_correction") else 0,
                 event_data.get("parent_review_id"),
@@ -250,6 +287,7 @@ def get_human_review_events(
     application_id_prefix: Optional[str] = None,
     source_run_id: Optional[str] = None,
     reviewer_id: Optional[str] = None,
+    reviewer_user_id: Optional[str] = None,
     new_review_status: Optional[str] = None,
     human_decision: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -270,6 +308,9 @@ def get_human_review_events(
     if reviewer_id:
         query += " AND reviewer_id LIKE ?"
         params.append(f"%{reviewer_id}%")
+    if reviewer_user_id:
+        query += " AND reviewer_user_id = ?"
+        params.append(reviewer_user_id)
     if new_review_status:
         query += " AND new_review_status = ?"
         params.append(new_review_status)
@@ -293,6 +334,7 @@ def get_human_review_events(
 
 
 __all__ = [
+    "ConcurrentReviewConflictError",
     "find_duplicate_review_submission",
     "get_human_review_by_id",
     "get_human_review_events",
