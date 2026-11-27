@@ -100,10 +100,11 @@ AI-Loan-Underwriting-Assistant/
 │   │   └── evaluator.py            # EligibilityEvaluator and aggregation logic
 │   ├── risk/                       # Risk modeling and scoring logic
 │   │   ├── __init__.py
-│   │   ├── features.py             # Feature engineering & amortization math
+│   │   ├── feature_contract.py     # Authoritative RiskFeatureContract (15 ordered features)
+│   │   ├── features.py             # Feature extraction adapter delegating to RiskFeatureContract
 │   │   ├── rules.py                # Deterministic risk & protective factor rules
 │   │   ├── scoring.py              # Baseline weighted risk scoring engine
-│   │   └── risk_model.py           # RandomForestClassifier ML risk model wrapper
+│   │   └── risk_model.py           # Scikit-learn Pipeline ML risk model wrapper
 │   ├── fraud/                      # Cross-document inconsistency and anomaly detection
 │   │   ├── __init__.py             # Public exports
 │   │   ├── rules.py                # Configurable rule thresholds and weights
@@ -138,8 +139,8 @@ AI-Loan-Underwriting-Assistant/
 │       ├── __init__.py
 │       └── helpers.py              # Centralized logging configuration
 ├── models/                         # Serialized ML model artifacts & metadata
-│   ├── risk_model.joblib           # Trained RandomForestClassifier
-│   └── risk_model_metadata.json    # Hyper-parameters & feature importances
+│   ├── risk_model.joblib           # Trained SimpleImputer + RandomForestClassifier Pipeline (80/20 split)
+│   └── risk_model_metadata.json    # Feature contract, CV/held-out metrics, split IDs & importances
 ├── data/
 │   ├── applicants/                 # Placeholder directory (.gitkeep)
 │   ├── documents/                  # Raw input PDFs and scanned images (APP0001-APP0030)
@@ -300,7 +301,7 @@ Stage 2 delivers a completely synthetic applicant dataset and multi-page loan do
   - Seed 42 ensures reproducible synthetic applicant values and document contents. PDF metadata/timestamps do not need to be byte-identical.
   - Strictly synthetic: Contains no real Aadhaar, PAN, bank account numbers, or real individuals' data. Every PDF is clearly watermarked: `"SYNTHETIC DOCUMENT — FOR SOFTWARE TESTING ONLY"` and `"SYNTHETIC — NOT A GOVERNMENT ID"`.
 
-### Dataset Generation & Validation Commands
+### Dataset & ML Reliability Commands
 
 ```bash
 # 1. Generate 100-applicant synthetic dataset (CSV, JSON, Metadata)
@@ -309,12 +310,26 @@ python scripts/generate_synthetic_dataset.py
 # 2. Generate 30 document packages, manifest, and ground truth
 python scripts/generate_documents.py
 
-# 3. Run automated dataset integrity validator (15 checks)
+# 3. Run automated dataset, document, leakage, fairness & artifact validator
 python scripts/validate_dataset.py
 
-# 4. Run automated test suite
-pytest
+# 4. Reproducibly train ML risk Pipeline (stratified 80/20 split, CV on train only)
+python scripts/train_risk_model.py
+
+# 5. Evaluate ML model vs deterministic baseline on CV and held-out N=20 test split
+python scripts/evaluate_risk_model.py
+
+# 6. Run automated test suite
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
 ```
+
+### ML Pipeline Reliability & Limitations (`risk_model_rf_v2`)
+
+- **Shared Feature Contract (`risk_features_v2`)**: Both training and runtime inference (`Applicant` and `DocumentPackageResult`) extract the exact 15 ordered features defined in `app/risk/feature_contract.py`, preserving explicit zero values (`0`, `0.0`) and `monthly_expenses` / `number_of_dependents`.
+- **Leakage-Free Imputation & Split**: `scripts/train_risk_model.py` uses a reproducible stratified 80/20 split (`random_state=42`; 80 train / 20 held-out test), fits `SimpleImputer(strategy="median")` + `RandomForestClassifier` strictly on the 80 training records, and evaluates 5-fold stratified cross-validation strictly inside the training partition (`96.25% +/- 3.06%` accuracy; `0.9530 +/- 0.0392` macro-F1).
+- **Honest Held-Out Test Performance (`N=20`)**: `95.00%` accuracy (`19/20`), `93.75%` balanced accuracy, `0.9365` macro-F1 (`1.0000` OVR ROC-AUC), compared against `60.00%` accuracy (`0.5655` macro-F1) for the deterministic weighted baseline (`RiskScorer`) on the same 20 held-out applicants.
+- **Fail-Fast Artifact Loading**: `MLRiskModel` validates serialized artifact and metadata feature contracts on load and refuses to silently auto-train or emit fabricated default risk scores if artifacts are missing or corrupted.
+- **Synthetic Data Scope Limitation**: Metrics come from a small 100-row synthetic cohort (not empirical historical bank defaults) and must never be represented as real-world credit performance. Protected attributes (`gender`) are strictly excluded from model features and audited solely for dataset representation.
 
 ---
 

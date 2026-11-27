@@ -40,10 +40,11 @@ EligibilityResult                 RiskResult
 ```
 
 The `RiskAgent` wraps the underlying components:
-- **`app/risk/features.py`**: Extracts 15 continuous and categorical features with zero target leakage.
-- **`app/risk/risk_model.py`**: Local `RandomForestClassifier` generating probability-weighted risk scores.
-- **`app/risk/scoring.py`**: Deterministic weighted heuristic baseline scorer.
-- **`app/risk/rules.py`**: Heuristic factor extraction engine producing human-readable risk and protective factors.
+- **`app/risk/feature_contract.py`**: Authoritative `RISK_FEATURE_CONTRACT` (`risk_features_v2`) defining the canonical 15 ordered features, strict required-field validation, and missing-value policies (`None` -> `np.nan` for median imputation).
+- **`app/risk/features.py`**: Backward-compatible adapter delegating feature extraction cleanly to `RISK_FEATURE_CONTRACT`.
+- **`app/risk/risk_model.py`**: Fail-fast loader and inference wrapper for the local Scikit-learn `Pipeline(SimpleImputer(median) + RandomForestClassifier)` artifact, validating feature order and metadata contracts on load.
+- **`app/risk/scoring.py`**: Deterministic weighted heuristic baseline scorer (`RiskScorer`, usable directly via `RiskAgent(use_ml=False)`).
+- **`app/risk/rules.py`**: Heuristic factor extraction engine producing human-readable risk and protective factors while safely skipping unprovided optional attributes.
 
 ---
 
@@ -73,26 +74,27 @@ The classification target is `profile_category` mapped to four tiers:
 
 ---
 
-## 5. Feature Engineering & Leakage Prevention
+## 5. Feature Engineering, Contract & Leakage Prevention
 
-### Explicit Feature Vector (15 Features)
-To prevent data leakage, target-derived columns (`profile_category`, `risk_category`, `risk_score`) are strictly excluded from the feature matrix:
+### Shared Feature Contract (`risk_features_v2`)
+Training, cross-validation, held-out evaluation, and runtime inference (`Applicant` and `DocumentPackageResult`) all read from the single authoritative contract defined in `app/risk/feature_contract.py` (`RISK_FEATURE_CONTRACT`).
+To prevent data leakage and protected-attribute misuse, target-derived or sensitive columns (`profile_category`, `risk_category`, `risk_score`, `applicant_id`, `name`, `gender`, `employer_name`, `city`, `total_monthly_obligations`) are strictly excluded from the feature matrix, while explicit zero values (`0`, `0.0`), `monthly_expenses`, and `number_of_dependents` are preserved without falsy coercion:
 
-1. `age`: Applicant age in years.
-2. `employment_years`: Career stability in years.
-3. `monthly_income`: Net monthly verified income in INR.
-4. `existing_emi`: Ongoing monthly debt obligations in INR.
-5. `loan_amount`: Requested loan principal in INR.
-6. `loan_tenure`: Requested loan duration in months.
-7. `credit_score`: Bureau credit score (range: 300–900).
-8. `bank_balance`: Liquid bank balance in INR.
-9. `monthly_expenses`: Declared or estimated living expenses in INR.
-10. `number_of_dependents`: Family dependents.
+1. `age`: Applicant age in years (required, `18–100`).
+2. `employment_years`: Career stability in years (optional, `>= 0.0`; `None` -> median-imputed in `Pipeline`).
+3. `monthly_income`: Net monthly verified income in INR (required, `> 0.0`).
+4. `existing_emi`: Ongoing monthly debt obligations in INR (optional, `>= 0.0`; defaults to `0.0`).
+5. `loan_amount`: Requested loan principal in INR (required, `> 0.0`).
+6. `loan_tenure`: Requested loan duration in months (required, `> 0`).
+7. `credit_score`: Bureau credit score (required, `300–900`).
+8. `bank_balance`: Liquid bank balance in INR (optional, `>= 0.0`; `None` -> median-imputed in `Pipeline`).
+9. `monthly_expenses`: Declared monthly living expenses in INR (optional, `>= 0.0`; preserved on runtime `Applicant`, `None` -> median-imputed in `Pipeline`).
+10. `number_of_dependents`: Family dependents (optional, `0–20`; preserved on runtime `Applicant`, `None` -> median-imputed in `Pipeline`).
 11. `estimated_new_emi`: Monthly installment for the requested loan calculated via standard amortization.
 12. `dti_ratio`: Debt-to-Income / FOIR ratio: `((existing_emi + estimated_new_emi) / monthly_income) * 100`.
 13. `loan_to_income_ratio`: Leverage ratio: `loan_amount / (monthly_income * 12)`.
-14. `net_disposable_income`: Unallocated monthly cash flow: `monthly_income - existing_emi - estimated_new_emi - monthly_expenses`.
-15. `is_salaried`: Binary flag (`1.0` for Salaried, `0.0` for Self-Employed).
+14. `net_disposable_income`: Unallocated monthly cash flow: `monthly_income - existing_emi - estimated_new_emi - monthly_expenses` (`None` if `monthly_expenses` is absent, then median-imputed in `Pipeline`).
+15. `is_salaried`: Binary indicator (`1.0` for Salaried, `0.0` for Self-Employed; `None` if omitted).
 
 ### Amortization Formula
 New EMI estimation uses the standard retail lending amortization formula:
@@ -103,14 +105,14 @@ with $r = 0.105 / 12$ (10.5% annual benchmark interest rate).
 
 ## 6. Model Selection
 
-### Primary Model: Random Forest Classifier
-- **Algorithm**: `RandomForestClassifier(n_estimators=50, max_depth=5, min_samples_split=2, random_state=42)`
+### Primary Model: Scikit-learn Imputation + Random Forest Pipeline (`risk_model_rf_v2`)
+- **Pipeline**: `Pipeline([("imputer", SimpleImputer(strategy="median")), ("classifier", RandomForestClassifier(n_estimators=50, max_depth=5, min_samples_split=2, random_state=42))])`
+- **Training & Split Discipline**: Fitted **strictly on the stratified 80% training split** (`N=80`, `random_state=42`); 5-fold stratified cross-validation runs solely within the 80 training records; the 20 held-out test records remain unseen during both imputer fitting and classifier training.
 - **Rationale**:
-  - Fully local, lightweight, and deterministic under fixed random seed.
-  - Native handling of non-linear financial ratios (DTI vs. credit score).
-  - Robust against feature scaling variations.
-  - Exposes transparent Gini feature importances.
-  - Predicts well-behaved class probability distributions.
+  - Leakage-free missing optional value imputation (`SimpleImputer(strategy="median")` learned only on `X_train`).
+  - Fully local, lightweight, and deterministic under fixed random seed (`random_state=42`).
+  - Native handling of non-linear financial ratios (DTI vs. credit score) and well-behaved multi-class probability distributions.
+  - Exposes transparent Gini feature importances and validates feature contracts on artifact load (fail-fast `RiskModelLoadError` / `RiskModelContractError` instead of silent auto-training or default fallbacks).
 
 ### Baseline Model: Domain-Weighted Heuristic Scorer
 A transparent, rule-based baseline weighting credit metrics:
@@ -125,58 +127,74 @@ $$\text{Composite} = 0.40 \times C_{\text{score}} + 0.30 \times DTI + 0.20 \time
 
 ## 7. Model Evaluation & Benchmark Results
 
-### Benchmark Comparison (Full Dataset N=100)
+All partitions are reported separately to prevent training/test leakage:
 
-| Metric | Baseline (Weighted Heuristic) | ML (Random Forest) |
+### 5-Fold Stratified Cross-Validation on Training Split ONLY (`N=80`)
+
+| Metric | Mean +/- Std |
+| :--- | :--- |
+| **CV Accuracy** | **0.9625 +/- 0.0306** |
+| **CV Balanced Accuracy** | **0.9542 +/- 0.0382** |
+| **CV Macro F1-Score** | **0.9530 +/- 0.0392** |
+| **CV Weighted F1-Score** | **0.9616 +/- 0.0314** |
+
+> *In-sample Training Fit (`N=80`, NOT for generalization): Accuracy `1.0000`, Balanced Accuracy `1.0000`, Macro F1 `1.0000`.*
+
+### Held-Out Test Split Benchmark (`N=20`, Unseen During Training)
+
+| Metric | Baseline (`RiskScorer`) | ML (`risk_model_rf_v2`) |
 | :--- | :--- | :--- |
-| **Overall Accuracy** | 60.0% | **100.0%** (Full fit) / **95.0%** (Holdout) |
-| **Macro F1-Score** | 0.5930 | **1.0000** (Full fit) / **0.9400** (Holdout) |
-| **5-Fold Cross-Validation Accuracy** | N/A | **97.00% (+/- 4.00%)** |
-| **5-Fold Cross-Validation Macro-F1** | N/A | **97.02% (+/- 3.72%)** |
+| **Accuracy** | 0.6000 (`12/20`) | **0.9500** (`19/20`) |
+| **Balanced Accuracy** | 0.5833 | **0.9375** |
+| **Macro F1-Score** | 0.5655 | **0.9365** |
+| **Weighted F1-Score** | 0.5786 | **0.9492** |
+| **Multi-Class OVR ROC-AUC (Macro / Weighted)** | N/A | **1.0000 / 1.0000** |
 
-### Per-Class Performance Breakdown (Full Dataset)
+### Per-Class Held-Out Test Report (`risk_model_rf_v2`, `N=20`)
 
-| Risk Tier | Baseline Precision | Baseline Recall | ML Precision | ML Recall |
+| Risk Tier | Precision | Recall | F1-Score | Support |
 | :--- | :--- | :--- | :--- | :--- |
-| `LOW` | 0.706 | 0.800 | **1.000** | **1.000** |
-| `MEDIUM` | 0.400 | 0.333 | **1.000** | **1.000** |
-| `BORDERLINE` | 0.444 | 0.400 | **1.000** | **1.000** |
-| `HIGH` | 0.783 | 0.900 | **1.000** | **1.000** |
+| `BORDERLINE` | 0.8000 | 1.0000 | 0.8889 | 4 |
+| `HIGH` | 1.0000 | 0.7500 | 0.8571 | 4 |
+| `LOW` | 1.0000 | 1.0000 | 1.0000 | 6 |
+| `MEDIUM` | 1.0000 | 1.0000 | 1.0000 | 6 |
 
-### Confusion Matrices
+*(The single held-out misclassification is `APP0012`: true `HIGH`, predicted `BORDERLINE`, risk score `68.93`.)*
 
-#### Baseline Scorer Confusion Matrix:
+### Confusion Matrices (Held-Out Test Split `N=20`)
+
+#### Baseline Scorer Confusion Matrix (`N=20`):
 ```text
-           Pred_LOW  Pred_MED  Pred_BORD  Pred_HIGH
-True_LOW         24         6          0          0
-True_MED          9        10         10          1
-True_BORD         1         7          8          4
-True_HIGH         0         2          0         18
+Actual \ Pred  BORDERLINE        HIGH         LOW      MEDIUM
+BORDERLINE              0           0           0           4
+HIGH                    0           4           0           0
+LOW                     0           0           5           1
+MEDIUM                  2           0           1           3
 ```
 
-#### ML Random Forest Confusion Matrix:
+#### ML Pipeline Confusion Matrix (`N=20`):
 ```text
-           Pred_LOW  Pred_MED  Pred_BORD  Pred_HIGH
-True_LOW         30         0          0          0
-True_MED          0        30          0          0
-True_BORD         0         0         20          0
-True_HIGH         0         0          0         20
+Actual \ Pred  BORDERLINE        HIGH         LOW      MEDIUM
+BORDERLINE              4           0           0           0
+HIGH                    1           3           0           0
+LOW                     0           0           6           0
+MEDIUM                  0           0           0           6
 ```
 
 ---
 
 ## 8. Feature Importance
 
-Top features identified by the Random Forest model:
+Top features identified by the fitted Random Forest on the 80-applicant training split:
 
 | Rank | Feature | Importance | Interpretation |
 | :--- | :--- | :--- | :--- |
-| 1 | `credit_score` | **30.91%** | Strongest single predictor of credit discipline |
-| 2 | `bank_balance` | **11.55%** | Liquid reserves buffer against unforeseen cash flow shocks |
-| 3 | `monthly_expenses` | **10.89%** | Discretionary consumption burden on monthly net cash flow |
-| 4 | `monthly_income` | **10.12%** | Primary debt-servicing baseline |
-| 5 | `net_disposable_income` | **8.61%** | Free cash flow cushion after existing and prospective obligations |
-| 6 | `employment_years` | **7.26%** | Career and earning stability tenure |
+| 1 | `credit_score` | **27.15%** | Strongest single predictor of credit discipline |
+| 2 | `monthly_expenses` | **12.96%** | Discretionary consumption burden on monthly net cash flow |
+| 3 | `bank_balance` | **11.52%** | Liquid reserves buffer against unforeseen cash flow shocks |
+| 4 | `monthly_income` | **10.95%** | Primary debt-servicing baseline |
+| 5 | `net_disposable_income` | **8.74%** | Free cash flow cushion after existing and prospective obligations |
+| 6 | `employment_years` | **6.60%** | Career and earning stability tenure |
 
 ---
 
@@ -231,34 +249,25 @@ The `RiskRulesEngine` extracts qualitative explanations grounded in applicant nu
 ## 11. Artifacts & Reproducibility
 
 Trained model artifacts are deterministically created and saved via `scripts/train_risk_model.py`:
-- `models/risk_model.joblib`: Serialized Scikit-learn Random Forest model.
-- `models/risk_model_metadata.json`: Feature list, hyper-parameters, cross-validation metrics, and feature importances.
+- `models/risk_model.joblib`: Serialized Scikit-learn `Pipeline(SimpleImputer(median) + RandomForestClassifier)` fit strictly on the 80-applicant training split.
+- `models/risk_model_metadata.json`: Feature contract schema (`risk_features_v2`), dataset SHA-256 hash, environment versions, disjoint `train_applicant_ids` / `test_applicant_ids`, imputer medians, hyper-parameters, separate CV/train/test metrics, and feature importances.
 
-To retrain the model from scratch:
+To validate the dataset and ML artifacts, retrain the model, or run the comparative evaluation:
 ```bash
-python scripts/train_risk_model.py
-```
-
-To run the comparative evaluation:
-```bash
-python scripts/evaluate_risk_model.py
+.venv/bin/python scripts/validate_dataset.py
+.venv/bin/python scripts/train_risk_model.py
+.venv/bin/python scripts/evaluate_risk_model.py
 ```
 
 ---
 
 ## 12. Testing & Quality Verification
 
-All 87 tests in the project test suite pass cleanly:
+Verify the full test suite (using an isolated temporary SQLite DB path) and formatting/lint checks with:
 ```bash
-$ .venv/bin/pytest tests/
-============================== 87 passed in 4.45s ==============================
-
-$ .venv/bin/ruff check .
-All checks passed!
-
-$ .venv/bin/black --check .
-All done! ✨ 🍰 ✨
-58 files would be left unchanged.
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/black --check .
 ```
 
 ---

@@ -1,14 +1,26 @@
-"""Unit tests for synthetic applicant dataset and financial calculations."""
+"""Unit tests for synthetic applicant dataset, financial math, validation, and ML training."""
 
 import json
 import os
 
 import pandas as pd
 
+from app.risk.feature_contract import (
+    FEATURE_CONTRACT_VERSION,
+    RISK_FEATURE_CONTRACT,
+    RISK_FEATURE_NAMES,
+)
+from app.risk.risk_model import MLRiskModel
 from scripts.generate_synthetic_dataset import (
     calculate_emi,
     generate_dataset,
     generate_unique_names,
+)
+from scripts.train_risk_model import DEFAULT_DATASET_PATH, train_risk_model
+from scripts.validate_dataset import (
+    EXPECTED_APPLICANT_COLUMNS,
+    validate_csv_json_feature_parity,
+    validate_ml_dataframe,
 )
 
 SYNTHETIC_DATA_DIR = "data/synthetic_data"
@@ -91,3 +103,95 @@ def test_applicant_financial_constraints():
         assert 300 <= row["credit_score"] <= 850
         assert row["monthly_income"] > 0
         assert row["loan_amount"] > 0
+
+
+def test_ml_dataframe_validator_passes_real_data_and_catches_regressions():
+    """ML data validator accepts real synthetic dataset and detects schema/label/duplicate defects."""
+    df = pd.read_csv(os.path.join(SYNTHETIC_DATA_DIR, "applicants.csv"))
+    with open(
+        os.path.join(SYNTHETIC_DATA_DIR, "applicants.json"), "r", encoding="utf-8"
+    ) as f:
+        json_records = json.load(f)
+
+    errors, warnings, diag = validate_ml_dataframe(df)
+    assert errors == []
+    assert diag["extracted_rows"] == 100
+    assert "gender" not in RISK_FEATURE_NAMES
+    assert "profile_category" not in RISK_FEATURE_NAMES
+    assert validate_csv_json_feature_parity(df, json_records) == []
+    assert any("employment_years > age - 16" in w for w in warnings)
+
+    # 1. Missing required column
+    df_missing_col = df.drop(columns=["monthly_expenses"])
+    errs, _, _ = validate_ml_dataframe(
+        df_missing_col, expected_columns=EXPECTED_APPLICANT_COLUMNS
+    )
+    assert any("Missing required columns" in e for e in errs)
+
+    # 2. Invalid target label
+    df_bad_label = df.copy()
+    df_bad_label.loc[0, "profile_category"] = "UNKNOWN_RISK"
+    errs, _, _ = validate_ml_dataframe(df_bad_label)
+    assert any("Invalid profile_category labels" in e for e in errs)
+
+    # 3. Duplicate applicant_id
+    df_dup_id = df.copy()
+    df_dup_id.loc[1, "applicant_id"] = df_dup_id.loc[0, "applicant_id"]
+    errs, _, _ = validate_ml_dataframe(df_dup_id)
+    assert any("Duplicate applicant_id" in e for e in errs)
+
+
+def test_reproducible_training_split_cv_and_metadata(tmp_path):
+    """Training pipeline is deterministic, isolates held-out test records, and emits valid metadata."""
+    model_1 = tmp_path / "run1" / "risk_model.joblib"
+    meta_1 = tmp_path / "run1" / "risk_model_metadata.json"
+    model_2 = tmp_path / "run2" / "risk_model.joblib"
+    meta_2 = tmp_path / "run2" / "risk_model_metadata.json"
+
+    res1 = train_risk_model(
+        dataset_path=DEFAULT_DATASET_PATH,
+        model_path=str(model_1),
+        metadata_path=str(meta_1),
+        verbose=False,
+    )
+    res2 = train_risk_model(
+        dataset_path=DEFAULT_DATASET_PATH,
+        model_path=str(model_2),
+        metadata_path=str(meta_2),
+        verbose=False,
+    )
+
+    assert res1["total_sample_count"] == 100
+    assert res1["train_sample_count"] == 80
+    assert res1["test_sample_count"] == 20
+    assert set(res1["train_applicant_ids"]).isdisjoint(set(res1["test_applicant_ids"]))
+    assert (
+        len(set(res1["train_applicant_ids"]) | set(res1["test_applicant_ids"])) == 100
+    )
+
+    # Reproducibility across runs
+    assert res1["train_applicant_ids"] == res2["train_applicant_ids"]
+    assert res1["test_applicant_ids"] == res2["test_applicant_ids"]
+    assert res1["cv_metrics"] == res2["cv_metrics"]
+    assert res1["test_metrics"] == res2["test_metrics"]
+    assert res1["feature_importances"] == res2["feature_importances"]
+    assert res1["dataset_sha256"] == res2["dataset_sha256"]
+
+    # Contract & artifact checks
+    assert res1["feature_contract_version"] == FEATURE_CONTRACT_VERSION
+    assert res1["feature_names"] == RISK_FEATURE_NAMES
+    assert res1["cv_metrics"]["sample_count"] == 80
+    assert res1["cv_metrics"]["accuracy_mean"] < 1.0  # Not overfit 100% CV leakage
+
+    # Trained artifact loads safely through MLRiskModel and handles held-out prediction
+    loaded = MLRiskModel(
+        model_path=str(model_1),
+        metadata_path=str(meta_1),
+        feature_contract=RISK_FEATURE_CONTRACT,
+    )
+    df = pd.read_csv(DEFAULT_DATASET_PATH).set_index("applicant_id")
+    first_test_id = res1["test_applicant_ids"][0]
+    row = df.loc[first_test_id].to_dict()
+    score, level, probs = loaded.predict_risk(row)
+    assert 0.0 <= score <= 100.0
+    assert abs(sum(probs.values()) - 1.0) < 1e-4

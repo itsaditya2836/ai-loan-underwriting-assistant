@@ -1,19 +1,21 @@
 """Machine-Learning Risk Assessment Model Wrapper.
 
-Wraps a local scikit-learn classifier (RandomForestClassifier) for synthetic
-risk profile classification. Provides deterministic inference, feature
-importance, normalized risk score (0-100), and categorical RiskLevel assignment.
+Loads a trained scikit-learn Pipeline artifact, enforces the authoritative
+RiskFeatureContract at inference time, validates artifact/metadata compatibility,
+and produces deterministic risk scores, RiskLevel tiers, and class probabilities.
 """
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import joblib
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 
-from app.risk.features import RISK_FEATURE_NAMES, extract_features
+from app.risk.feature_contract import (
+    RISK_FEATURE_CONTRACT,
+    FeatureValidationError,
+    RiskFeatureContract,
+)
 from app.schemas.applicant import Applicant, DocumentPackageResult, RiskLevel
 from app.utils.helpers import get_logger
 
@@ -40,6 +42,18 @@ TIER_SEVERITY_WEIGHTS = {
 }
 
 
+class RiskModelError(RuntimeError):
+    """Base exception for ML risk model loading and inference errors."""
+
+
+class RiskModelLoadError(FileNotFoundError, RiskModelError):
+    """Raised when the ML risk model artifact is missing or cannot be loaded."""
+
+
+class RiskModelContractError(ValueError, RiskModelError):
+    """Raised when a loaded model or metadata does not match the feature contract."""
+
+
 class MLRiskModel:
     """Predictive machine-learning model wrapper for synthetic risk profile classification."""
 
@@ -47,142 +61,139 @@ class MLRiskModel:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         metadata_path: str = DEFAULT_METADATA_PATH,
+        feature_contract: Optional[RiskFeatureContract] = None,
         random_state: int = 42,
     ) -> None:
-        """Initialize the ML risk model, loading saved artifact or training if absent."""
+        """Initialize the ML risk model by loading and validating saved artifacts."""
         self.model_path = model_path
         self.metadata_path = metadata_path
+        self.feature_contract = feature_contract or RISK_FEATURE_CONTRACT
         self.random_state = random_state
-        self.model: Optional[RandomForestClassifier] = None
-        self.feature_names: List[str] = list(RISK_FEATURE_NAMES)
+        self.model: Any = None
+        self.feature_names: List[str] = list(self.feature_contract.feature_names)
         self.feature_importances: Dict[str, float] = {}
-        self.model_version: str = "risk_model_rf_v1"
+        self.model_version: str = "risk_model_rf_v2"
+        self.metadata: Dict[str, Any] = {}
 
-        if os.path.exists(self.model_path):
-            self._load_model()
-        else:
-            logger.info(
-                "Model artifact not found at %s. Initializing/training.",
-                self.model_path,
+        self._load_and_validate_model()
+
+    def _load_and_validate_model(self) -> None:
+        """Load trained model and metadata from disk, enforcing feature contract."""
+        if not os.path.exists(self.model_path):
+            raise RiskModelLoadError(
+                f"ML risk model artifact not found at '{self.model_path}'. "
+                "Run 'python scripts/train_risk_model.py' to generate it."
             )
-            self._train_or_initialize()
 
-    def _load_model(self) -> None:
-        """Load trained model and metadata from disk."""
         try:
-            self.model = joblib.load(self.model_path)
-            logger.info("Loaded ML risk model from %s", self.model_path)
+            loaded = joblib.load(self.model_path)
+        except Exception as exc:
+            raise RiskModelLoadError(
+                f"Failed to load ML risk model artifact from '{self.model_path}': {exc}"
+            ) from exc
 
-            if os.path.exists(self.metadata_path):
+        if not (
+            hasattr(loaded, "predict")
+            and hasattr(loaded, "predict_proba")
+            and hasattr(loaded, "classes_")
+        ):
+            raise RiskModelContractError(
+                f"Loaded artifact at '{self.model_path}' does not implement predict/predict_proba/classes_."
+            )
+
+        # Verify model's expected feature names & exact order against contract
+        model_features = list(getattr(loaded, "feature_names_in_", []))
+        if model_features != self.feature_contract.feature_names:
+            raise RiskModelContractError(
+                f"Model feature contract mismatch for '{self.model_path}': "
+                f"model expects {model_features}, contract defines {self.feature_contract.feature_names}."
+            )
+
+        # Load and validate metadata if present
+        if self.metadata_path and os.path.exists(self.metadata_path):
+            try:
                 with open(self.metadata_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                    self.model_version = meta.get("model_version", self.model_version)
-                    self.feature_names = meta.get("feature_names", self.feature_names)
-                    self.feature_importances = meta.get("feature_importances", {})
+            except Exception as exc:
+                raise RiskModelLoadError(
+                    f"Failed to read model metadata at '{self.metadata_path}': {exc}"
+                ) from exc
 
-            if not self.feature_importances and hasattr(
-                self.model, "feature_importances_"
+            meta_features = meta.get("feature_names")
+            if (
+                meta_features is not None
+                and list(meta_features) != self.feature_contract.feature_names
             ):
-                self.feature_importances = {
-                    feat: round(float(imp), 4)
-                    for feat, imp in zip(
-                        self.feature_names, self.model.feature_importances_
-                    )
-                }
-        except Exception as exc:
-            logger.warning(
-                "Failed to load model from %s (%s). Re-training.", self.model_path, exc
-            )
-            self._train_or_initialize()
+                raise RiskModelContractError(
+                    f"Metadata feature mismatch in '{self.metadata_path}': "
+                    f"{meta_features} != {self.feature_contract.feature_names}."
+                )
 
-    def _train_or_initialize(self) -> None:
-        """Train model on synthetic dataset if available, or initialize default model."""
-        if os.path.exists(DATASET_PATH):
-            df = pd.read_csv(DATASET_PATH)
-            # Map target
-            y = df["profile_category"].map(TARGET_MAP)
-            # Engineer features for each row
-            X_rows = [extract_features(row.to_dict()) for _, row in df.iterrows()]
-            X = pd.DataFrame(X_rows)[self.feature_names]
+            meta_contract_ver = meta.get("feature_contract_version")
+            if (
+                meta_contract_ver is not None
+                and meta_contract_ver != self.feature_contract.version
+            ):
+                raise RiskModelContractError(
+                    f"Metadata feature contract version mismatch in '{self.metadata_path}': "
+                    f"'{meta_contract_ver}' != '{self.feature_contract.version}'."
+                )
 
-            self.model = RandomForestClassifier(
-                n_estimators=50,
-                max_depth=5,
-                min_samples_split=2,
-                random_state=self.random_state,
-            )
-            self.model.fit(X, y)
+            self.metadata = meta
+            self.model_version = str(meta.get("model_version", self.model_version))
+            self.feature_importances = dict(meta.get("feature_importances", {}))
 
+        self.model = loaded
+
+        # Extract feature importances directly from Pipeline estimator if not cached in metadata
+        estimator = (
+            loaded.named_steps["classifier"]
+            if hasattr(loaded, "named_steps") and "classifier" in loaded.named_steps
+            else loaded
+        )
+        if not self.feature_importances and hasattr(estimator, "feature_importances_"):
             self.feature_importances = {
                 feat: round(float(imp), 4)
-                for feat, imp in zip(
-                    self.feature_names, self.model.feature_importances_
-                )
+                for feat, imp in zip(self.feature_names, estimator.feature_importances_)
             }
 
-            # Save artifact if directory is writable
-            os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-            try:
-                joblib.dump(self.model, self.model_path)
-                meta = {
-                    "model_version": self.model_version,
-                    "model_type": "RandomForestClassifier",
-                    "n_estimators": 50,
-                    "max_depth": 5,
-                    "random_state": self.random_state,
-                    "feature_names": self.feature_names,
-                    "feature_importances": self.feature_importances,
-                }
-                with open(self.metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
-                logger.info("Trained and saved ML risk model to %s", self.model_path)
-            except Exception as e:
-                logger.warning("Could not persist model artifact: %s", e)
-        else:
-            logger.warning(
-                "Synthetic dataset %s not found. Model remains uninitialized.",
-                DATASET_PATH,
-            )
+        logger.info(
+            "Loaded ML risk model '%s' (%s) matching contract '%s'.",
+            self.model_version,
+            self.model_path,
+            self.feature_contract.version,
+        )
 
     def predict_risk(
-        self, target: Union[Applicant, DocumentPackageResult, Dict[str, Any]]
+        self, target: Union[Applicant, DocumentPackageResult, Mapping[str, Any]]
     ) -> Tuple[float, RiskLevel, Dict[str, float]]:
-        """Predict risk score, RiskLevel, and class probabilities for an applicant.
-
-        Args:
-            target: Applicant model, DocumentPackageResult, or raw dictionary.
-
-        Returns:
-            Tuple of (risk_score, RiskLevel, class_probabilities).
-        """
-        features = extract_features(target)
-        X_vec = pd.DataFrame([features])[self.feature_names]
-
+        """Predict risk score, RiskLevel, and class probabilities for an applicant."""
         if self.model is None:
-            # Fallback if model could not be loaded or trained
-            score = 50.0
-            return score, RiskLevel.MEDIUM, {"MEDIUM": 1.0}
+            raise RiskModelLoadError("ML risk model is not loaded.")
 
-        # Predict class probabilities
-        probs = self.model.predict_proba(X_vec)[0]
-        classes = list(self.model.classes_)
-        prob_dict = {cls_name: float(p) for cls_name, p in zip(classes, probs)}
+        features = self.feature_contract.extract(target)
+        X_vec = self.feature_contract.to_dataframe([features])
 
-        # Continuous expected risk score on 0-100 scale
+        try:
+            probs = self.model.predict_proba(X_vec)[0]
+            classes = list(self.model.classes_)
+            predicted_class = str(self.model.predict(X_vec)[0])
+        except Exception as exc:
+            raise RiskModelError(f"ML risk model inference failed: {exc}") from exc
+
+        prob_dict = {str(cls_name): float(p) for cls_name, p in zip(classes, probs)}
+
         exp_score = sum(
             prob_dict.get(tier, 0.0) * TIER_SEVERITY_WEIGHTS.get(tier, 50.0)
             for tier in TIER_SEVERITY_WEIGHTS
         )
         risk_score = round(min(max(exp_score, 0.0), 100.0), 2)
-
-        # Categorical prediction (argmax probability)
-        predicted_class = str(self.model.predict(X_vec)[0])
         category = RiskLevel(predicted_class)
 
         return risk_score, category, prob_dict
 
     def predict_default_probability(
-        self, applicant: Union[Applicant, Dict[str, Any]]
+        self, applicant: Union[Applicant, Mapping[str, Any]]
     ) -> float:
         """Legacy helper: Predict estimated high-risk likelihood (0.0 to 1.0).
 
@@ -192,13 +203,12 @@ class MLRiskModel:
         return round(score / 100.0, 4)
 
     def explain_prediction(
-        self, applicant: Union[Applicant, Dict[str, Any]]
+        self, applicant: Union[Applicant, Mapping[str, Any]]
     ) -> Dict[str, Any]:
-        """Provide feature values, feature importances, and class probabilities for predictions."""
-        features = extract_features(applicant)
+        """Provide feature values, feature importances, and class probabilities."""
+        features = self.feature_contract.extract(applicant)
         score, category, probs = self.predict_risk(applicant)
 
-        # Top 5 most influential features in model
         sorted_importances = sorted(
             self.feature_importances.items(), key=lambda item: item[1], reverse=True
         )
@@ -211,4 +221,19 @@ class MLRiskModel:
             "feature_importances": dict(sorted_importances),
             "top_features": [f[0] for f in sorted_importances[:5]],
             "model_version": self.model_version,
+            "feature_contract_version": self.feature_contract.version,
         }
+
+
+__all__ = [
+    "DATASET_PATH",
+    "DEFAULT_METADATA_PATH",
+    "DEFAULT_MODEL_PATH",
+    "FeatureValidationError",
+    "MLRiskModel",
+    "RiskModelContractError",
+    "RiskModelError",
+    "RiskModelLoadError",
+    "TARGET_MAP",
+    "TIER_SEVERITY_WEIGHTS",
+]

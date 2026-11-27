@@ -8,7 +8,8 @@ domain-weighted financial factors:
 - Liquidity Reserve Buffer (10% weight)
 """
 
-from typing import Any, Dict, Tuple, Union
+import math
+from typing import Any, Dict, Optional, Tuple, Union
 
 from app.risk.features import extract_features
 from app.schemas.applicant import Applicant, DocumentPackageResult, RiskLevel
@@ -40,7 +41,7 @@ class RiskScorer:
         return score, category
 
     def score_features(
-        self, features: Dict[str, float]
+        self, features: Dict[str, Optional[float]]
     ) -> Tuple[float, RiskLevel, Dict[str, float]]:
         """Compute composite risk score and component breakdowns from features.
 
@@ -51,45 +52,50 @@ class RiskScorer:
             Tuple of (overall_risk_score, RiskLevel, component_breakdown).
         """
         # 1. Credit Score Component (40% weight)
-        cs = features.get("credit_score", 700.0)
-        if cs >= 750:
+        cs = features.get("credit_score")
+        cs_val = 700.0 if cs is None or math.isnan(cs) else float(cs)
+        if cs_val >= 750:
             cs_comp = 10.0
-        elif cs >= 700:
+        elif cs_val >= 700:
             cs_comp = 30.0
-        elif cs >= 650:
+        elif cs_val >= 650:
             cs_comp = 50.0
-        elif cs >= 600:
+        elif cs_val >= 600:
             cs_comp = 75.0
         else:
             cs_comp = 95.0
 
         # 2. DTI / FOIR Ratio Component (30% weight)
-        dti = features.get("dti_ratio", 40.0)
-        if dti <= 30.0:
+        dti = features.get("dti_ratio")
+        dti_val = 40.0 if dti is None or math.isnan(dti) else float(dti)
+        if dti_val <= 30.0:
             dti_comp = 10.0
-        elif dti <= 45.0:
+        elif dti_val <= 45.0:
             dti_comp = 35.0
-        elif dti <= 60.0:
+        elif dti_val <= 60.0:
             dti_comp = 70.0
         else:
             dti_comp = 95.0
 
         # 3. Loan-to-Income Component (20% weight)
-        lti = features.get("loan_to_income_ratio", 1.5)
-        if lti <= 1.0:
+        lti = features.get("loan_to_income_ratio")
+        lti_val = 1.5 if lti is None or math.isnan(lti) else float(lti)
+        if lti_val <= 1.0:
             lti_comp = 10.0
-        elif lti <= 2.5:
+        elif lti_val <= 2.5:
             lti_comp = 45.0
         else:
             lti_comp = 85.0
 
         # 4. Liquidity Reserve Buffer Component (10% weight)
-        bal = features.get("bank_balance", 50000.0)
-        tot_emi = features.get("existing_emi", 0.0) + features.get(
-            "estimated_new_emi", 0.0
-        )
-        if tot_emi > 0:
-            coverage = bal / tot_emi
+        bal = features.get("bank_balance")
+        ex_emi = features.get("existing_emi") or 0.0
+        new_emi = features.get("estimated_new_emi") or 0.0
+        tot_emi = float(ex_emi) + float(new_emi)
+        if bal is None or math.isnan(bal):
+            buf_comp = 50.0
+        elif tot_emi > 0:
+            coverage = float(bal) / tot_emi
             if coverage >= 6.0:
                 buf_comp = 10.0
             elif coverage >= 2.0:

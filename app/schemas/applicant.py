@@ -76,6 +76,17 @@ class Applicant(BaseModel):
     bank_balance: float = Field(
         default=0.0, ge=0.0, description="Average verifiable bank balance"
     )
+    monthly_expenses: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Declared monthly living expenses in INR (optional; imputed by risk pipeline if omitted)",
+    )
+    number_of_dependents: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=20,
+        description="Number of financial dependents (optional; imputed by risk pipeline if omitted)",
+    )
 
 
 class Document(BaseModel):

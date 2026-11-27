@@ -10,18 +10,34 @@ Verifies:
 - Explicit absence of loan approval decisions or fraud labeling
 """
 
+import json
+import math
 import os
 
+import joblib
+import numpy as np
 import pytest
+from pydantic import ValidationError
+from sklearn.dummy import DummyClassifier
 
 from app.agents.document_agent import DocumentIntakeAgent
 from app.agents.risk_agent import RiskAgent
+from app.orchestration.orchestrator import UnderwritingOrchestrator
+from app.risk.feature_contract import (
+    FEATURE_CONTRACT_VERSION,
+    RISK_FEATURE_CONTRACT,
+    FeatureValidationError,
+)
 from app.risk.features import (
     RISK_FEATURE_NAMES,
     calculate_emi,
     extract_features,
 )
-from app.risk.risk_model import MLRiskModel
+from app.risk.risk_model import (
+    MLRiskModel,
+    RiskModelContractError,
+    RiskModelLoadError,
+)
 from app.risk.rules import RiskRulesEngine
 from app.risk.scoring import RiskScorer
 from app.schemas.applicant import (
@@ -344,3 +360,240 @@ def test_risk_agent_with_missing_document_package():
     assert 0.0 <= result.risk_score <= 100.0
     # No fraud or anomaly terms in risk explanation
     assert "fraud" not in result.explanation.lower()
+
+
+def test_applicant_preserves_expenses_dependents_and_zeros():
+    """Applicant schema and feature contract preserve monthly_expenses, dependents, and explicit zeros."""
+    applicant = Applicant(
+        applicant_id="APP_ZERO_01",
+        name="Zero Edge Case",
+        age=35,
+        employment_type="SALARIED",
+        employment_years=0.0,
+        monthly_income=80000.0,
+        existing_emi=0.0,
+        loan_amount=400000.0,
+        loan_tenure=48,
+        credit_score=740,
+        bank_balance=0.0,
+        monthly_expenses=0.0,
+        number_of_dependents=0,
+    )
+    feats = extract_features(applicant)
+    assert feats["employment_years"] == 0.0
+    assert feats["existing_emi"] == 0.0
+    assert feats["bank_balance"] == 0.0
+    assert feats["monthly_expenses"] == 0.0
+    assert feats["number_of_dependents"] == 0.0
+    assert feats["is_salaried"] == 1.0
+
+
+def test_applicant_rejects_negative_expenses_or_dependents():
+    """Negative monthly_expenses or number_of_dependents fail Applicant validation."""
+    with pytest.raises(ValidationError):
+        Applicant(
+            applicant_id="APP_BAD_01",
+            name="Bad Expenses",
+            age=30,
+            employment_type="SALARIED",
+            employment_years=3.0,
+            monthly_income=50000.0,
+            existing_emi=0.0,
+            loan_amount=200000.0,
+            loan_tenure=24,
+            credit_score=700,
+            monthly_expenses=-100.0,
+        )
+
+    with pytest.raises(ValidationError):
+        Applicant(
+            applicant_id="APP_BAD_02",
+            name="Bad Dependents",
+            age=30,
+            employment_type="SALARIED",
+            employment_years=3.0,
+            monthly_income=50000.0,
+            existing_emi=0.0,
+            loan_amount=200000.0,
+            loan_tenure=24,
+            credit_score=700,
+            number_of_dependents=-1,
+        )
+
+
+def test_orchestrator_applicant_training_serving_feature_parity():
+    """Runtime Applicant loaded from JSON extracts identical features as training CSV row."""
+    import pandas as pd
+
+    csv_path = "data/synthetic_data/applicants.csv"
+    df = pd.read_csv(csv_path)
+    row = df[df["applicant_id"] == "APP0001"].iloc[0].to_dict()
+
+    applicant = UnderwritingOrchestrator().load_applicant("APP0001")
+    assert applicant is not None
+    assert applicant.monthly_expenses == float(row["monthly_expenses"])
+    assert applicant.number_of_dependents == int(row["number_of_dependents"])
+
+    serving_feats = RISK_FEATURE_CONTRACT.extract(applicant)
+    training_feats = RISK_FEATURE_CONTRACT.extract(row)
+    assert serving_feats == training_feats
+
+
+def test_sparse_document_package_uses_none_and_pipeline_imputation():
+    """Missing optional fields extract as None and are handled cleanly by ML Pipeline imputer."""
+
+    def _ef(name: str, val) -> ExtractedField:
+        return ExtractedField(
+            field_name=name,
+            value=val,
+            confidence=0.9,
+            source_document="app.pdf",
+            evidence=str(val),
+        )
+
+    pkg = DocumentPackageResult(
+        applicant_id="APP_SPARSE_01",
+        package_dir="/dummy",
+        documents_found=[],
+        all_extracted_fields={
+            "age": _ef("age", 34),
+            "declared_monthly_income": _ef("declared_monthly_income", 95000.0),
+            "credit_score": _ef("credit_score", 745),
+            "loan_amount": _ef("loan_amount", 500000.0),
+            "loan_tenure": _ef("loan_tenure", 48),
+        },
+    )
+
+    feats = RISK_FEATURE_CONTRACT.extract(pkg)
+    assert feats["monthly_expenses"] is None
+    assert feats["number_of_dependents"] is None
+    assert feats["employment_years"] is None
+    assert feats["bank_balance"] is None
+    assert feats["net_disposable_income"] is None
+
+    df = RISK_FEATURE_CONTRACT.to_dataframe([feats])
+    assert math.isnan(df.iloc[0]["monthly_expenses"])
+    assert math.isnan(df.iloc[0]["bank_balance"])
+
+    ml_model = MLRiskModel()
+    score, level, probs = ml_model.predict_risk(pkg)
+    assert 0.0 <= score <= 100.0
+    assert isinstance(level, RiskLevel)
+    assert abs(sum(probs.values()) - 1.0) < 1e-4
+
+    # Scorer & rules handle None optional values safely without crashing
+    scorer = RiskScorer()
+    base_score, base_level, breakdown = scorer.score_features(feats)
+    assert 0.0 <= base_score <= 100.0
+    assert isinstance(base_level, RiskLevel)
+    assert breakdown["liquidity_risk"] == 50.0
+
+    rules = RiskRulesEngine()
+    risk_factors, protective_factors = rules.evaluate_factors(feats)
+    assert isinstance(risk_factors, list)
+    assert isinstance(protective_factors, list)
+
+
+@pytest.mark.parametrize(
+    "bad_record",
+    [
+        {
+            "age": 30,
+            "monthly_income": 50000.0,
+            "loan_amount": 200000.0,
+            "loan_tenure": 24,
+        },  # missing credit_score
+        {
+            "age": 16,
+            "monthly_income": 50000.0,
+            "loan_amount": 200000.0,
+            "loan_tenure": 24,
+            "credit_score": 720,
+        },  # age below 18
+        {
+            "age": 30,
+            "monthly_income": 0.0,
+            "loan_amount": 200000.0,
+            "loan_tenure": 24,
+            "credit_score": 720,
+        },  # non-positive income
+        {
+            "age": 30,
+            "monthly_income": 50000.0,
+            "loan_amount": 200000.0,
+            "loan_tenure": 24,
+            "credit_score": 200,
+        },  # invalid credit score
+    ],
+)
+def test_feature_contract_rejects_missing_or_invalid_required_fields(bad_record):
+    """Feature contract raises FeatureValidationError on missing or invalid required inputs."""
+    with pytest.raises(FeatureValidationError):
+        RISK_FEATURE_CONTRACT.extract(bad_record)
+
+
+def test_ml_risk_model_fails_loudly_on_missing_or_corrupt_artifact(tmp_path):
+    """MLRiskModel refuses silent auto-training or hardcoded fallback on broken artifacts."""
+    missing_model = tmp_path / "does_not_exist.joblib"
+    missing_meta = tmp_path / "does_not_exist.json"
+    with pytest.raises(RiskModelLoadError):
+        MLRiskModel(model_path=str(missing_model), metadata_path=str(missing_meta))
+
+    corrupt_model = tmp_path / "corrupt.joblib"
+    corrupt_model.write_text("not a valid joblib pickle", encoding="utf-8")
+    with pytest.raises(RiskModelLoadError):
+        MLRiskModel(model_path=str(corrupt_model), metadata_path=str(missing_meta))
+
+
+def test_ml_risk_model_rejects_feature_contract_mismatch(tmp_path):
+    """MLRiskModel rejects artifacts or metadata whose feature contract differs."""
+    dummy = DummyClassifier(strategy="most_frequent")
+    wrong_X = np.array([[1.0, 2.0], [3.0, 4.0]])
+    dummy.fit(wrong_X, ["LOW", "HIGH"])
+    dummy.feature_names_in_ = np.array(["wrong_a", "wrong_b"])
+
+    bad_model_path = tmp_path / "bad_contract_model.joblib"
+    joblib.dump(dummy, bad_model_path)
+
+    with pytest.raises(RiskModelContractError):
+        MLRiskModel(
+            model_path=str(bad_model_path),
+            metadata_path=str(tmp_path / "no_meta.json"),
+        )
+
+    # Now test valid artifact paired with reversed feature order in metadata
+    real_model_path = "models/risk_model.joblib"
+    bad_meta_path = tmp_path / "bad_meta.json"
+    bad_meta = {
+        "feature_contract_version": FEATURE_CONTRACT_VERSION,
+        "feature_names": list(reversed(RISK_FEATURE_NAMES)),
+    }
+    bad_meta_path.write_text(json.dumps(bad_meta), encoding="utf-8")
+
+    with pytest.raises(RiskModelContractError):
+        MLRiskModel(model_path=real_model_path, metadata_path=str(bad_meta_path))
+
+
+def test_risk_agent_baseline_mode_skips_ml_loading(tmp_path):
+    """RiskAgent(use_ml=False) operates purely deterministically without loading ML model."""
+    agent = RiskAgent(use_ml=False)
+    assert agent.ml_model is None
+
+    applicant = Applicant(
+        applicant_id="APP_BASE_01",
+        name="Baseline Test",
+        age=36,
+        employment_type="SALARIED",
+        employment_years=6.0,
+        monthly_income=110000.0,
+        existing_emi=10000.0,
+        loan_amount=500000.0,
+        loan_tenure=60,
+        credit_score=775,
+        bank_balance=450000.0,
+        monthly_expenses=30000.0,
+        number_of_dependents=1,
+    )
+    res = agent.assess(applicant)
+    assert res.model_version == "baseline_weighted_v1"
+    assert res.risk_category == RiskLevel.LOW

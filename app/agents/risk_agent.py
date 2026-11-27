@@ -37,14 +37,21 @@ class RiskAgent:
         use_ml: bool = True,
     ) -> None:
         """Initialize RiskAgent with underlying models and rule evaluators."""
-        self.ml_model = ml_model or MLRiskModel()
+        self.use_ml = use_ml
+        self.ml_model = ml_model
+        if self.use_ml and self.ml_model is None:
+            self.ml_model = MLRiskModel()
         self.rules_engine = rules_engine or RiskRulesEngine()
         self.baseline_scorer = baseline_scorer or RiskScorer()
-        self.use_ml = use_ml
+        model_ver = (
+            self.ml_model.model_version
+            if self.ml_model is not None
+            else "baseline_weighted_v1"
+        )
         logger.info(
             "RiskAgent initialized (Method: %s, Model: %s).",
             "ML_RANDOM_FOREST" if self.use_ml else "BASELINE_WEIGHTED",
-            self.ml_model.model_version,
+            model_ver,
         )
 
     def assess(
@@ -63,8 +70,11 @@ class RiskAgent:
 
         # 1. Evaluate Risk Score and Category
         if self.use_ml:
+            if self.ml_model is None:
+                raise RuntimeError("MLRiskModel is required when use_ml=True.")
             score, category, _ = self.ml_model.predict_risk(target)
             method = "ML_RANDOM_FOREST"
+            model_version = self.ml_model.model_version
             feature_importance = dict(
                 sorted(
                     self.ml_model.feature_importances.items(),
@@ -75,6 +85,7 @@ class RiskAgent:
         else:
             score, category, _ = self.baseline_scorer.score_features(features)
             method = "BASELINE_WEIGHTED"
+            model_version = "baseline_weighted_v1"
             feature_importance = {
                 "credit_score": 0.40,
                 "dti_ratio": 0.30,
@@ -138,7 +149,7 @@ class RiskAgent:
             protective_factors=protective_factors,
             features_used=features,
             feature_importance=feature_importance,
-            model_version=self.ml_model.model_version,
+            model_version=model_version,
             method=method,
             explanation=explanation,
             evidence=evidence,
