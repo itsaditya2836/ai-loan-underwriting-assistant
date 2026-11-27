@@ -1,7 +1,8 @@
-"""Session-State Management Helpers for the Stage 5 Streamlit Application.
+"""Session-State Management Helpers for the Streamlit Underwriting Workbench.
 
-Centralizes navigation routing, draft preservation across reruns, upload staging
-buffers, result caching keyed by applicant/run ID, and duplicate-submission guards.
+Centralizes navigation routing, grouped role-aware navigation labels, draft preservation
+across reruns, upload staging buffers, result caching keyed by applicant/run ID, and
+duplicate-submission guards.
 """
 
 from __future__ import annotations
@@ -12,14 +13,25 @@ import streamlit as st
 
 NAV_PAGES: tuple[str, ...] = (
     "Dashboard",
-    "Underwriter Review Queue",
     "New Application",
     "Applications",
     "Application Details",
     "Document Review",
     "Underwriting Results",
+    "Underwriter Review Queue",
     "Audit History",
 )
+
+NAV_SIDEBAR_LABELS: Dict[str, str] = {
+    "Dashboard": "Overview · Dashboard",
+    "New Application": "Applications · New Application",
+    "Applications": "Applications · All Applications",
+    "Application Details": "Applications · Case Details",
+    "Document Review": "Underwriting · Document Review",
+    "Underwriting Results": "Underwriting · Results",
+    "Underwriter Review Queue": "Human Review · Review Queue",
+    "Audit History": "Records · Audit History",
+}
 
 STATE_CURRENT_PAGE = "ui_current_page"
 STATE_SELECTED_APP_ID = "ui_selected_app_id"
@@ -42,6 +54,43 @@ STATE_PENDING_LOAD_INTAKE = "_ui_pending_load_intake"
 STATE_LAST_REVIEW_RECEIPT = "ui_last_review_receipt"
 STATE_AUTH_ACCESS_TOKEN = "ui_auth_access_token"
 STATE_AUTH_REFRESH_TOKEN = "ui_auth_refresh_token"
+
+
+def can_role_access_page(role: Optional[Any], page: str) -> bool:
+    """Return whether an authenticated RBAC role is permitted to access a page."""
+    if role is None:
+        return True
+    from app.auth.permissions import Permission, check_permission
+
+    if page == "Underwriter Review Queue":
+        return check_permission(role, Permission.REVIEW_VIEW_ASSIGNED) or check_permission(
+            role, Permission.REVIEW_VIEW_ALL
+        )
+    if page == "New Application":
+        return check_permission(role, Permission.APPLICANT_CREATE) and check_permission(
+            role, Permission.UNDERWRITING_INITIATE
+        )
+    if page in {"Applications", "Application Details"}:
+        return check_permission(role, Permission.APPLICANT_VIEW_OWN) or check_permission(
+            role, Permission.APPLICANT_VIEW_ALL
+        )
+    if page == "Document Review":
+        return check_permission(role, Permission.DOCUMENT_VIEW)
+    if page == "Underwriting Results":
+        return check_permission(role, Permission.UNDERWRITING_VIEW_RESULTS)
+    if page == "Audit History":
+        return check_permission(role, Permission.AUDIT_VIEW_ALL) or check_permission(
+            role, Permission.AUDIT_VIEW_OWN
+        )
+    return True
+
+
+def format_sidebar_nav_option(page: str, role: Optional[Any] = None) -> str:
+    """Render compact grouped navigation labels with role-restriction hints."""
+    base = NAV_SIDEBAR_LABELS.get(page, page)
+    if not can_role_access_page(role, page):
+        return f"{base} [Restricted]"
+    return base
 
 
 def default_intake_draft(applicant_id: str = "") -> Dict[str, Any]:
