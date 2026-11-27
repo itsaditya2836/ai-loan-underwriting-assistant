@@ -239,9 +239,7 @@ def render_dashboard_overview() -> None:
             continue
 
         hum_status = (
-            q_item.get("human_review_status")
-            if q_item
-            else ReviewStatus.PENDING.value
+            q_item.get("human_review_status") if q_item else ReviewStatus.PENDING.value
         )
         is_final = hum_status in {
             ReviewStatus.APPROVED.value,
@@ -310,86 +308,84 @@ def render_dashboard_overview() -> None:
 
     priority_tasks.sort(key=lambda t: (t["priority"], t["applicant_id"]))
 
-    pipe_col, task_col = st.columns([1.25, 1.0], gap="medium")
+    with st.container(border=True):
+        render_section_heading(
+            "Application Pipeline",
+            f"Active distribution across {total_tracked} tracked loan application(s)",
+        )
+        render_pipeline_visual(
+            [
+                {
+                    "label": "Awaiting Eval",
+                    "count": stage_counts["awaiting_run"],
+                    "color": tokens["muted"],
+                },
+                {
+                    "label": "Attention",
+                    "count": stage_counts["incomplete_or_failed"],
+                    "color": tokens["coral"],
+                },
+                {
+                    "label": "In Review",
+                    "count": stage_counts["manual_review"],
+                    "color": tokens["amber"],
+                },
+                {
+                    "label": "AI Approve",
+                    "count": stage_counts["ai_approved"],
+                    "color": tokens["teal"],
+                },
+                {
+                    "label": "Finalized",
+                    "count": stage_counts["human_finalized"],
+                    "color": tokens["primary"],
+                },
+            ]
+        )
+        st.caption(
+            f"Human Decisions Recorded: {human_approved} Approved · {review_metrics['rejected_by_underwriter']} Rejected · "
+            f"Avg Pipeline Latency: {audit_sum['avg_latency_ms']:.1f} ms"
+        )
 
-    with pipe_col:
-        with st.container(border=True):
-            render_section_heading(
-                "Application Pipeline",
-                f"Active distribution across {total_tracked} tracked loan application(s)",
+    with st.container(border=True):
+        render_section_heading(
+            "Priority Tasks",
+            f"{len(priority_tasks)} item(s) requiring verification, triage, or review",
+        )
+        if not priority_tasks:
+            render_empty_state(
+                "All Clear",
+                "No applications currently await verification, triage, or human review.",
             )
-            render_pipeline_visual(
-                [
-                    {
-                        "label": "Awaiting Eval",
-                        "count": stage_counts["awaiting_run"],
-                        "color": tokens["muted"],
-                    },
-                    {
-                        "label": "Attention",
-                        "count": stage_counts["incomplete_or_failed"],
-                        "color": tokens["coral"],
-                    },
-                    {
-                        "label": "In Review",
-                        "count": stage_counts["manual_review"],
-                        "color": tokens["amber"],
-                    },
-                    {
-                        "label": "AI Approve",
-                        "count": stage_counts["ai_approved"],
-                        "color": tokens["teal"],
-                    },
-                    {
-                        "label": "Finalized",
-                        "count": stage_counts["human_finalized"],
-                        "color": tokens["primary"],
-                    },
-                ]
-            )
-            st.caption(
-                f"Human Decisions Recorded: {human_approved} Approved · {review_metrics['rejected_by_underwriter']} Rejected · "
-                f"Avg Pipeline Latency: {audit_sum['avg_latency_ms']:.1f} ms"
-            )
-
-    with task_col:
-        with st.container(border=True):
-            render_section_heading(
-                "Priority Tasks",
-                f"{len(priority_tasks)} item(s) requiring verification, triage, or review",
-            )
-            if not priority_tasks:
-                render_empty_state(
-                    "All Clear",
-                    "No applications currently await verification, triage, or human review.",
-                )
-            else:
-                for idx, task in enumerate(priority_tasks[:4]):
-                    c_info, c_btn = st.columns([3.0, 1.0], vertical_alignment="center")
-                    with c_info:
-                        pill = render_status_pill(task["badge"])
-                        st.markdown(
-                            f"**{_esc(task['applicant_id'])}** · {_esc(task['name'])}<br/>"
-                            f"{pill} <span style='font-size:0.78rem;color:var(--bank-muted);'>{_esc(task['reason'])}</span>",
-                            unsafe_allow_html=True,
-                        )
-                    with c_btn:
-                        if st.button(
-                            task["cta"],
-                            key=f"dash_task_btn_{idx}_{task['applicant_id']}",
-                            width="stretch",
-                        ):
-                            navigate_to(
-                                task["target_page"],
-                                applicant_id=task["applicant_id"],
-                                run_id=task["run_id"] or None,
+        else:
+            for start in range(0, min(len(priority_tasks), 4), 2):
+                task_cols = st.columns(2, gap="medium")
+                for offset, task in enumerate(priority_tasks[start : start + 2]):
+                    idx = start + offset
+                    with task_cols[offset]:
+                        with st.container(border=True):
+                            c_info, c_btn = st.columns(
+                                [4.0, 1.0], vertical_alignment="center"
                             )
-                            st.rerun()
-                    if idx < min(len(priority_tasks), 4) - 1:
-                        st.markdown(
-                            "<hr style='margin:0.35rem 0;'>",
-                            unsafe_allow_html=True,
-                        )
+                            with c_info:
+                                pill = render_status_pill(task["badge"])
+                                st.markdown(
+                                    f"**{_esc(task['applicant_id'])}** · {_esc(task['name'])}<br/>"
+                                    f"{pill} <span style='font-size:0.78rem;color:var(--bank-muted);'>{_esc(task['reason'])}</span>",
+                                    unsafe_allow_html=True,
+                                )
+                            with c_btn:
+                                if st.button(
+                                    task["cta"],
+                                    key=f"dash_task_btn_{idx}_{task['applicant_id']}",
+                                    width="stretch",
+                                ):
+                                    navigate_to(
+                                        task["target_page"],
+                                        applicant_id=task["applicant_id"],
+                                        run_id=task["run_id"] or None,
+                                    )
+                                    st.rerun()
 
     # ------------------------------------------------------------------
     # Recent Applications Table + Contextual Open
@@ -556,7 +552,10 @@ def render_applications_directory_view() -> None:
             else None
         )
         page_size = d4.selectbox(
-            "Rows to Display", options=[20, 50, 100, 200], index=0, key="apps_page_limit"
+            "Rows to Display",
+            options=[20, 50, 100, 200],
+            index=0,
+            key="apps_page_limit",
         )
 
     rows: List[List[str]] = []
@@ -606,12 +605,16 @@ def render_applications_directory_view() -> None:
                 format_inr(rec.get("loan_amount")),
                 format_compact_status(latest_rec) if latest else "Not Evaluated",
                 format_compact_status(latest["risk_category"]) if latest else "—",
-                format_compact_status(case_rev["human_review_status"])
-                if latest
-                else "—",
-                format_compact_status(case_rev["human_decision"])
-                if case_rev.get("human_decision")
-                else ("Pending" if latest else "—"),
+                (
+                    format_compact_status(case_rev["human_review_status"])
+                    if latest
+                    else "—"
+                ),
+                (
+                    format_compact_status(case_rev["human_decision"])
+                    if case_rev.get("human_decision")
+                    else ("Pending" if latest else "—")
+                ),
                 latest_ts[:10] if latest_ts != "—" else "—",
             ]
         )
@@ -740,7 +743,9 @@ def render_application_details_view(
     app_status_raw = data.get("application_status") or (
         "UNDERWRITTEN"
         if latest_run and latest_run.get("pipeline_status") == "SUCCESS"
-        else ("SYNTHETIC_CATALOG" if not latest_run else latest_run.get("pipeline_status"))
+        else (
+            "SYNTHETIC_CATALOG" if not latest_run else latest_run.get("pipeline_status")
+        )
     )
     ai_rec_raw = case_summary.get("ai_recommendation", "NOT_EVALUATED")
     rev_status_raw = case_summary.get("human_review_status", "PENDING")
@@ -810,7 +815,9 @@ def render_application_details_view(
             ):
                 if next_action == "RUN_PIPELINE":
                     try:
-                        with st.spinner(f"Running underwriting pipeline for {chosen_id}..."):
+                        with st.spinner(
+                            f"Running underwriting pipeline for {chosen_id}..."
+                        ):
                             out = submit_application_and_underwrite(
                                 applicant=Applicant.model_validate(data),
                                 staged_uploads=[],
@@ -1301,9 +1308,7 @@ def render_audit_history_view() -> None:
         )
 
         f1, f2, f3, f4, f5, f6 = st.columns(6)
-        f_app = f1.text_input(
-            "Applicant ID", value="", key="audit_filter_app"
-        ).strip()
+        f_app = f1.text_input("Applicant ID", value="", key="audit_filter_app").strip()
         f_rev_id = f2.text_input(
             "Reviewer ID", value="", key="audit_filter_reviewer"
         ).strip()
@@ -1388,7 +1393,9 @@ def render_audit_history_view() -> None:
                     ],
                     pill_columns={2, 3, 4},
                 )
-                with st.expander("Interactive Grid View (Human Review Events)", expanded=False):
+                with st.expander(
+                    "Interactive Grid View (Human Review Events)", expanded=False
+                ):
                     hr_rows = [
                         {
                             "Review ID": ev["review_id"],
@@ -1408,11 +1415,15 @@ def render_audit_history_view() -> None:
                                 if ev.get("is_correction")
                                 else "No"
                             ),
-                            "Timestamp (UTC)": _format_utc_short(ev["review_timestamp"]),
+                            "Timestamp (UTC)": _format_utc_short(
+                                ev["review_timestamp"]
+                            ),
                         }
                         for ev in hr_events
                     ]
-                    st.dataframe(pd.DataFrame(hr_rows), width="stretch", hide_index=True)
+                    st.dataframe(
+                        pd.DataFrame(hr_rows), width="stretch", hide_index=True
+                    )
 
                 sel_rev_id = st.selectbox(
                     "Inspect Human Review Event",
