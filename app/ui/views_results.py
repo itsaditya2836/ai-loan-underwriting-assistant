@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from app.database.audit import get_applicant_run_history, get_audit_run_by_id
+from app.review.service import get_case_review_summary
 from app.schemas.applicant import Applicant, DocumentPackageResult
 from app.schemas.decision import DecisionReasoningResult
 from app.schemas.underwriting import UnderwritingAnalysisResult
@@ -25,6 +26,7 @@ from app.ui.components import (
     render_conflicts_panel,
     render_factor_cards,
     render_hitl_banner,
+    render_human_vs_ai_summary_panel,
     render_recommendation_badge,
 )
 from app.ui.services import (
@@ -405,6 +407,21 @@ def render_underwriting_results_view() -> None:
         return
 
     render_hitl_banner()
+
+    # Explicitly separate AI Recommendation, Pipeline Execution, Human Review Status, and Human Decision
+    st.markdown("### Underwriting Status Separation (AI vs Pipeline vs Human Review)")
+    case_summary = get_case_review_summary(chosen_id, run_id=ctx.get("run_id"))
+    render_human_vs_ai_summary_panel(case_summary)
+    if st.button(
+        "Open Case in Underwriter Review Queue →",
+        key=f"results_goto_review_queue_{chosen_id}",
+    ):
+        navigate_to(
+            "Underwriter Review Queue",
+            applicant_id=chosen_id,
+            run_id=ctx.get("run_id"),
+        )
+        st.rerun()
 
     # Audit Persistence Banner
     if ctx["audit_persisted"] and ctx.get("run_id"):

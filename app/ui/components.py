@@ -229,3 +229,39 @@ def render_conflicts_panel(conflicts: List[Dict[str, Any]]) -> None:
             f"- **`{cid}` ({sev})**: {desc}  \n"
             f"  *Sources:* `{sources}` | *Authoritative:* `{auth}`"
         )
+
+
+def render_human_vs_ai_summary_panel(case_summary: Dict[str, Any]) -> None:
+    """Display AI recommendation, pipeline status, human review status, and human decision separately."""
+    ai_rec = case_summary.get("ai_recommendation", "NOT_EVALUATED")
+    pipe_st = case_summary.get("pipeline_status", "NOT_RUN")
+    rev_st = case_summary.get("human_review_status", "PENDING")
+    hum_dec = case_summary.get("human_decision")
+    latest_rev = case_summary.get("latest_review")
+
+    hum_dec_disp = hum_dec if hum_dec else "Not yet recorded"
+    reviewer_note = (
+        f"By {latest_rev['reviewer_id']} ({str(latest_rev.get('review_timestamp', ''))[:19].replace('T', ' ')} UTC)"
+        if latest_rev
+        else "Awaiting human reviewer action"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "1. AI Recommendation",
+        ai_rec,
+        delta="Advisory only (never final lending authority)",
+        delta_color="off",
+    )
+    c2.metric("2. Pipeline Execution", pipe_st)
+    c3.metric("3. Human Review Status", rev_st)
+    c4.metric(
+        "4. Final Human Decision",
+        hum_dec_disp,
+        delta=reviewer_note,
+        delta_color="off",
+    )
+    st.caption(
+        "Reviewer attribution records user-supplied Reviewer IDs for workflow traceability; "
+        "local authentication and RBAC are scheduled for Stage 7."
+    )

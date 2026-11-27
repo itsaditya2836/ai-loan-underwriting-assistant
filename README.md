@@ -130,21 +130,27 @@ AI-Loan-Underwriting-Assistant/
 │   │   ├── __init__.py
 │   │   ├── applications.py         # Persisted submitted_applications table (Stage 5)
 │   │   ├── audit.py                # Immutable SQLite underwriting_runs ledger & snapshots
-│   │   └── db.py                   # SQLite connection manager & schema initializer
-│   ├── ui/                         # Active Streamlit UI package (Stage 5)
+│   │   ├── db.py                   # SQLite connection manager & schema initializer
+│   │   └── reviews.py              # Append-only Stage 6 human_review_events ledger
+│   ├── review/                     # Stage 6 server-side human review workflow & validation
 │   │   ├── __init__.py
-│   │   ├── components.py           # Styling, INR/unavailable formatters & cards
-│   │   ├── dashboard.py            # Main 7-page controller & backwards-compatible helpers
+│   │   └── service.py              # Lifecycle state machine, queue & safe audit submission
+│   ├── ui/                         # Active Streamlit UI package (Stages 5–6)
+│   │   ├── __init__.py
+│   │   ├── components.py           # Styling, INR/unavailable formatters & status panels
+│   │   ├── dashboard.py            # Main 8-page controller & backwards-compatible helpers
 │   │   ├── services.py             # Validated intake, PDF upload lifecycle & backend glue
 │   │   ├── state.py                # Streamlit session-state keys & rerun-safe transitions
 │   │   ├── views_intake.py         # New Application intake & PDF upload workflow
 │   │   ├── views_portfolio.py      # Dashboard, Applications, Details & Audit History
-│   │   └── views_results.py        # Underwriting Results & Document Review views
+│   │   ├── views_results.py        # Underwriting Results & Document Review views
+│   │   └── views_review.py         # Stage 6 Underwriter Review Queue & human decisions
 │   ├── schemas/                    # Pydantic data models and contracts
 │   │   ├── __init__.py
 │   │   ├── applicant.py            # Applicant, Document, and Agent result schemas
 │   │   ├── anomaly.py              # AnomalyFlag, AnomalyResult, AnomalySeverity schemas
 │   │   ├── decision.py             # DecisionOutcome, DecisionReason, DecisionReasoningResult
+│   │   ├── review.py               # ReviewStatus, HumanReviewAction, HumanReviewEvent schemas
 │   │   └── underwriting.py         # OrchestrationStatus, AgentStatus, UnderwritingAnalysisResult
 │   └── utils/                      # Shared helper utilities
 │       ├── __init__.py
@@ -169,6 +175,7 @@ AI-Loan-Underwriting-Assistant/
 │   ├── test_eligibility.py         # Eligibility agent and schema tests
 │   ├── test_extractor.py           # Field extractor and classifier tests
 │   ├── test_fraud.py               # Fraud, decision, config, and db tests
+│   ├── test_human_review.py        # Stage 6 human review lifecycle, queue & audit tests
 │   ├── test_ocr.py                 # Local Tesseract OCR tests
 │   ├── test_orchestrator.py        # Stage 7 orchestrator & fallback regression tests
 │   ├── test_pdf_reader.py          # PyMuPDF PDF reader tests
@@ -515,9 +522,9 @@ Primary Reason:        [DEC-ANOM-001] Cross-document discrepancy detected (ANOM-
 
 ---
 
-## Stage 5 / Stage 9 — Complete Streamlit Application & Audit Trail
+## Stage 5 / Stage 6 / Stage 9 — Streamlit Workbench, Human Review & Audit Trail
 
-The interactive **Streamlit Application** (`app/ui/`) and **SQLite Audit Trail** (`app/database/`) provide a full 7-page local underwriting workbench backed directly by the Stage 1–4 multi-agent pipeline (detailed in [`STAGE_5_STREAMLIT_APPLICATION.md`](STAGE_5_STREAMLIT_APPLICATION.md)):
+The interactive **Streamlit Application** (`app/ui/`), **Human Underwriter Review Service** (`app/review/`), and **SQLite Audit Trail** (`app/database/`) provide an 8-page local underwriting workbench backed directly by the Stage 1–4 multi-agent pipeline (detailed in [`STAGE_5_STREAMLIT_APPLICATION.md`](STAGE_5_STREAMLIT_APPLICATION.md) and [`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)):
 
 ### How to Start the Application
 
@@ -531,22 +538,27 @@ DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/python app/main.py
 
 ### Key Implemented Workflows
 
-1. **Dashboard**: Displays SQLite-derived application vs execution KPIs (excluding failed pipeline runs from completed application totals), decision/risk distributions, daily trends, and recent activity filters.
-2. **New Application (Applicant Intake & PDF Upload)**:
+1. **Dashboard**: Displays SQLite-derived application vs execution KPIs (excluding failed pipeline runs from completed application totals) alongside Human Review Queue status counts, decision/risk distributions, daily trends, and recent activity filters.
+2. **Underwriter Review Queue (Stage 6)**:
+   - Surfaces cases requiring human attention (`MANUAL_REVIEW`, incomplete/unverified docs, consistency conflicts, unavailable/failed agent runs, `PENDING`/`ADDITIONAL_INFO_REQUESTED`/`INVESTIGATION_REQUIRED`).
+   - Supports side-by-side inspection of applicant details, AI analysis, masked document evidence, and review timelines while keeping **AI Recommendation**, **Pipeline Status**, **Human Review Status**, and **Final Human Decision** strictly separate.
+   - Records validated, append-only actions (`APPROVE`, `REJECT`, `REQUEST_ADDITIONAL_INFO`, `RETURN_FOR_INVESTIGATION`, `START_REVIEW`, `RETURN_TO_PENDING`) and linked decision corrections without ever altering original AI recommendations.
+3. **New Application (Applicant Intake & PDF Upload)**:
    - Schema-validated `Applicant` intake preserving valid zero values (`existing_emi=0.0`, `bank_balance=0.0`) with collision-free reference ID generation (`APP-YYYYMMDD-XXXX`).
    - Multi-file PDF upload validation (`.pdf`, `<= 25 MB`, `%PDF-` signature, active-content scan, SHA-256 deduplication), per-file removal, cached pre-submission Stage 3 extraction previews, ephemeral temp-directory cleanup, duplicate-submission prevention, and safe execution through `UnderwritingOrchestrator` + `DecisionReasoningAgent`.
-3. **Applications & Application Details**: Unified directory merging persisted `submitted_applications` and read-only synthetic reference applicants (`APP0001`–`APP0100`) without join duplication, with chronological multi-run inspection.
-4. **Underwriting Results**: Presents mapped AI recommendations (`APPROVED (APPROVE)`, `REJECTED (REJECT)`, `MANUAL_REVIEW`), eligibility rules, ML risk tier/score (`Unavailable` when missing — never `0.0`), fraud status (`UNAVAILABLE` when failed — never `NONE`), document verification diagnostics, cross-agent conflicts, review reasons, and agent statuses.
-5. **Document Review**: Per-document OCR/page telemetry, classification confidence (heuristic notice), missing/invalid/ambiguous/conflicting fields, and privacy-masked identifiers/account numbers.
-6. **Audit History**: Read-only SQLite compliance ledger (`underwriting_runs` + masked `details_snapshot_json`) with multi-filter search and run inspection (officer overrides belong to Stage 6).
+4. **Applications & Application Details**: Unified directory merging persisted `submitted_applications` and read-only synthetic reference applicants (`APP0001`–`APP0100`) without join duplication, showing separate AI vs human statuses, additional-info follow-ups, and multi-run history.
+5. **Underwriting Results**: Presents mapped AI recommendations (`APPROVED (APPROVE)`, `REJECTED (REJECT)`, `MANUAL_REVIEW`), explicit AI vs Pipeline vs Human Review summary, eligibility rules, ML risk tier/score (`Unavailable` when missing — never `0.0`), fraud status (`UNAVAILABLE` when failed — never `NONE`), document verification diagnostics, cross-agent conflicts, review reasons, and agent statuses.
+6. **Document Review**: Per-document OCR/page telemetry, classification confidence (heuristic notice), missing/invalid/ambiguous/conflicting fields, and privacy-masked identifiers/account numbers.
+7. **Audit History**: Read-only compliance ledger querying SQLite `underwriting_runs` (`details_snapshot_json`) and append-only `human_review_events` with multi-filter search, linked correction tracing, and zero edit/delete actions.
 
-### Human-in-the-Loop & Verification Commands
+### Human-in-the-Loop, Attribution & Verification Commands
 
-- **Advisory Decision Support**: Labeled **`AI RECOMMENDATION`**; mandatory HITL banners keep lending authority with human officers.
-- **UI & Audit Tests**:
+- **Advisory AI + Separate Human Decision**: AI outputs remain read-only (`AI RECOMMENDATION`), while authorized human decisions persist separately in `human_review_events`.
+- **Attribution Notice**: Stage 6 `Reviewer ID` fields record attribution strings cleanly for audit traceability; real authentication and RBAC are scheduled for Stage 7.
+- **Review, UI & Audit Tests**:
 
 ```bash
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_streamlit_app.py tests/test_dashboard_audit.py -v
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_human_review.py tests/test_streamlit_app.py tests/test_dashboard_audit.py -v
 ```
 
 ---

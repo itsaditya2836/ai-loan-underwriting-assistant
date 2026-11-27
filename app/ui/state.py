@@ -12,6 +12,7 @@ import streamlit as st
 
 NAV_PAGES: tuple[str, ...] = (
     "Dashboard",
+    "Underwriter Review Queue",
     "New Application",
     "Applications",
     "Application Details",
@@ -37,6 +38,8 @@ STATE_PENDING_NAV_APP_ID = "_ui_pending_nav_app_id"
 STATE_PENDING_NAV_RUN_ID = "_ui_pending_nav_run_id"
 STATE_PENDING_CLEAR_INTAKE = "_ui_pending_clear_intake"
 STATE_PENDING_GEN_APP_ID = "_ui_pending_gen_app_id"
+STATE_PENDING_LOAD_INTAKE = "_ui_pending_load_intake"
+STATE_LAST_REVIEW_RECEIPT = "ui_last_review_receipt"
 
 
 def default_intake_draft(applicant_id: str = "") -> Dict[str, Any]:
@@ -133,8 +136,22 @@ def apply_pending_state_transitions(available_app_ids: List[str]) -> None:
                 "results_app_selector",
                 "details_app_selector",
                 "doc_review_app_selector",
+                "rq_selected_case_id",
             ):
                 st.session_state[wk] = aid
+
+    if STATE_PENDING_LOAD_INTAKE in st.session_state:
+        draft_payload = st.session_state.pop(STATE_PENDING_LOAD_INTAKE)
+        st.session_state[STATE_INTAKE_SEED_REF] = draft_payload.get("applicant_id", "")
+        st.session_state[STATE_INTAKE_DRAFT] = draft_payload
+        st.session_state[STATE_STAGED_UPLOADS] = []
+        st.session_state[STATE_DOC_PREVIEW_CACHE] = {}
+        st.session_state[STATE_UPLOAD_COUNTER] = (
+            int(st.session_state.get(STATE_UPLOAD_COUNTER, 0)) + 1
+        )
+        for key in list(st.session_state.keys()):
+            if isinstance(key, str) and key.startswith("intake_field_"):
+                del st.session_state[key]
 
     if STATE_PENDING_NAV_RUN_ID in st.session_state:
         rid = st.session_state.pop(STATE_PENDING_NAV_RUN_ID)
@@ -170,6 +187,15 @@ def clear_intake_after_submission(new_applicant_ref: str) -> None:
 def queue_new_applicant_ref(fresh_id: str) -> None:
     """Queue applicant ID widget update before next rerun renders widgets."""
     st.session_state[STATE_PENDING_GEN_APP_ID] = fresh_id
+
+
+def queue_existing_applicant_for_intake(app_record: Dict[str, Any]) -> None:
+    """Queue preloading an existing applicant record cleanly into New Application intake."""
+    draft = default_intake_draft(str(app_record.get("applicant_id", "")))
+    for k in draft:
+        if k in app_record:
+            draft[k] = app_record[k]
+    st.session_state[STATE_PENDING_LOAD_INTAKE] = draft
 
 
 def store_live_result(

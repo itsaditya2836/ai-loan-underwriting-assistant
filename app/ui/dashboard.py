@@ -54,6 +54,7 @@ from app.ui.views_results import (
     render_document_review_view,
     render_underwriting_results_view,
 )
+from app.ui.views_review import render_underwriter_review_queue_view
 
 
 @st.cache_data
@@ -108,6 +109,7 @@ def _on_sidebar_app_change() -> None:
             "results_app_selector",
             "details_app_selector",
             "doc_review_app_selector",
+            "rq_selected_case_id",
         ):
             st.session_state.pop(wk, None)
         st.session_state["ui_selected_run_id"] = None
@@ -208,6 +210,8 @@ def render_dashboard() -> None:
 
     if active_page == "Dashboard":
         render_dashboard_overview()
+    elif active_page == "Underwriter Review Queue":
+        render_underwriter_review_queue_view()
     elif active_page == "New Application":
         render_new_application_view()
     elif active_page == "Applications":

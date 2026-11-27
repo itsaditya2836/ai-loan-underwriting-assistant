@@ -24,6 +24,15 @@ from app.schemas.decision import (
     DecisionReason,
     DecisionReasoningResult,
 )
+from app.schemas.review import (
+    ACTION_TO_TARGET_STATUS,
+    ALLOWED_REVIEW_TRANSITIONS,
+    CORRECTION_ALLOWED_TARGETS,
+    HumanReviewAction,
+    HumanReviewEvent,
+    HumanReviewSubmission,
+    ReviewStatus,
+)
 from app.schemas.underwriting import (
     AgentExecutionStatus,
     AgentStatus,
@@ -50,8 +59,15 @@ __all__ = [
     "EligibilityStatus",
     "EmploymentType",
     "ExtractedField",
+    "ACTION_TO_TARGET_STATUS",
+    "ALLOWED_REVIEW_TRANSITIONS",
+    "CORRECTION_ALLOWED_TARGETS",
+    "HumanReviewAction",
+    "HumanReviewEvent",
+    "HumanReviewSubmission",
     "OrchestrationStatus",
     "RecommendationType",
+    "ReviewStatus",
     "RiskLevel",
     "RiskResult",
     "RuleStatus",

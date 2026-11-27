@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.review.service import get_case_review_summary
+from app.schemas.review import ReviewStatus
 from app.ui.components import format_inr
 from app.ui.services import (
     CANONICAL_DOCUMENT_CATEGORIES,
     EMPLOYMENT_TYPE_OPTIONS,
     expected_documents_for_employment,
     generate_applicant_reference,
+    get_applicant_record,
     mask_extracted_value,
     preview_uploaded_documents,
     submit_application_and_underwrite,
@@ -64,12 +67,16 @@ def _render_intake_receipt() -> None:
             f"Underwriting completed, but audit database persistence reported an issue: {err or 'Unavailable'}"
         )
 
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button("View Full Underwriting Results →", key="receipt_goto_results"):
+        if st.button("View Underwriting Results →", key="receipt_goto_results"):
             navigate_to("Underwriting Results", applicant_id=app_id, run_id=run_id)
             st.rerun()
     with b2:
+        if st.button("Open in Review Queue →", key="receipt_goto_review_queue"):
+            navigate_to("Underwriter Review Queue", applicant_id=app_id, run_id=run_id)
+            st.rerun()
+    with b3:
         if st.button("Review Uploaded Documents →", key="receipt_goto_docs"):
             navigate_to("Document Review", applicant_id=app_id, run_id=run_id)
             st.rerun()
@@ -94,6 +101,21 @@ def render_new_application_view() -> None:
         st.session_state[STATE_INTAKE_SEED_REF] = seed_ref
         draft["applicant_id"] = seed_ref
         st.session_state[STATE_INTAKE_DRAFT] = draft
+
+    # Surface active human-requested additional-info instructions if revisiting an existing case
+    existing_rec = get_applicant_record(str(draft.get("applicant_id", "")).strip())
+    if existing_rec:
+        case_rev = get_case_review_summary(existing_rec["applicant_id"])
+        latest_rev = case_rev.get("latest_review") or {}
+        if (
+            case_rev.get("human_review_status")
+            == ReviewStatus.ADDITIONAL_INFO_REQUESTED.value
+        ):
+            st.warning(
+                f"**Additional Information Requested for `{existing_rec['applicant_id']}`:** "
+                f"{latest_rev.get('additional_info_request') or 'See review notes.'}  \n"
+                "Submitting updated documents creates a new underwriting run while preserving all prior audit history."
+            )
 
     # ------------------------------------------------------------------
     # Section 1: Authoritative Applicant Profile (All Applicant fields)

@@ -23,7 +23,7 @@
 
 ## 2. Navigation & Modular UI Architecture
 
-The sidebar (`sidebar_nav_radio` + `sidebar_app_selector` with pending-state transition queuing in [`app/ui/state.py`](app/ui/state.py)) coordinates seven functional screens:
+The sidebar (`sidebar_nav_radio` + `sidebar_app_selector` with pending-state transition queuing in [`app/ui/state.py`](app/ui/state.py)) coordinates seven Stage 5 screens (extended in Stage 6 with `Underwriter Review Queue` — see [`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)):
 
 | Page | Module | Responsibility |
 | :--- | :--- | :--- |
@@ -95,8 +95,8 @@ Handled by `submit_application_and_underwrite()` ([`app/ui/services.py`](app/ui/
   - Displays unique applicant rows paired with run counts and latest run state, searchable by ID/name, source (`submitted` vs `synthetic`), latest decision, pipeline status, and date range (`ORDER BY` / grouped without join duplication).
   - Application Details displays full chronological run history per applicant.
 - **Audit History** ([`app/ui/views_portfolio.py`](app/ui/views_portfolio.py)):
-  - Queries SQLite `underwriting_runs` (including additive `details_snapshot_json` storing masked Stage 3–8 evidence) with filters for applicant ref, recommendation, pipeline status, risk category, and anomaly severity.
-  - Strictly read-only (no edit or delete actions; human officer review overrides are deferred to Stage 6).
+  - Queries SQLite `underwriting_runs` (including additive `details_snapshot_json` storing masked Stage 3–8 evidence) and Stage 6 append-only `human_review_events` with filters for applicant ref, recommendation, pipeline status, risk category, anomaly severity, and reviewer ID.
+  - Strictly read-only (no edit or delete actions). Human underwriter review, follow-up queues, and linked corrections are implemented in Stage 6 ([`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)).
 
 ---
 

@@ -17,13 +17,22 @@ from app.database.audit import (
     get_audit_run_by_id,
     get_audit_runs,
 )
+from app.database.reviews import get_human_review_events, get_review_history_for_run
+from app.review.service import (
+    compute_review_queue_metrics,
+    get_case_review_summary,
+    list_review_queue,
+    record_additional_info_return,
+)
 from app.schemas.applicant import Applicant
+from app.schemas.review import ReviewStatus
 from app.ui.components import (
     format_fraud_status_display,
     format_inr,
     format_risk_score_display,
     render_conflicts_panel,
     render_factor_cards,
+    render_human_vs_ai_summary_panel,
 )
 from app.ui.services import (
     compute_dashboard_metrics,
@@ -38,6 +47,7 @@ from app.ui.state import (
     STATE_SELECTED_APP_ID,
     STATE_SELECTED_RUN_ID,
     navigate_to,
+    queue_existing_applicant_for_intake,
     store_live_result,
 )
 
@@ -73,6 +83,18 @@ def render_dashboard_overview() -> None:
     r3.metric("Failed Pipeline Runs", audit_sum.get("failed_runs_count", 0))
     r4.metric("Avg Confidence (Heuristic)", f"{audit_sum['avg_confidence']:.1f}%")
     r5.metric("Avg Pipeline Latency", f"{audit_sum['avg_latency_ms']:.1f} ms")
+
+    review_metrics = compute_review_queue_metrics(
+        list_review_queue(include_finalized=True)
+    )
+    st.markdown("#### Human Underwriter Review Queue Status (Separate from AI Runs)")
+    h1, h2, h3, h4, h5, h6 = st.columns(6)
+    h1.metric("Pending Reviews", review_metrics["pending_reviews"])
+    h2.metric("In Review", review_metrics["in_progress"])
+    h3.metric("Human Approved", review_metrics["approved_by_underwriter"])
+    h4.metric("Human Rejected", review_metrics["rejected_by_underwriter"])
+    h5.metric("Info Requested", review_metrics["additional_info_requested"])
+    h6.metric("Investigation Req.", review_metrics["investigation_required"])
 
     if audit_sum["total_runs"] == 0:
         st.info(
@@ -270,6 +292,9 @@ def render_applications_directory_view() -> None:
                 continue
 
         matching_ids.append(aid)
+        case_rev = get_case_review_summary(
+            aid, run_id=latest["run_id"] if latest else None
+        )
         rows.append(
             {
                 "Applicant Ref": aid,
@@ -280,11 +305,16 @@ def render_applications_directory_view() -> None:
                 "Runs": len(app_runs),
                 "Latest Run ID": latest["run_id"] if latest else "—",
                 "Timestamp (UTC)": latest_ts,
-                "Latest Decision": (
+                "Latest AI Rec": (
                     format_decision_label(latest_rec) if latest else "Not Evaluated"
                 ),
-                "Risk Category": latest["risk_category"] if latest else "—",
                 "Pipeline Status": latest_pipe,
+                "Human Review Status": (
+                    case_rev["human_review_status"] if latest else "N/A"
+                ),
+                "Final Human Decision": case_rev.get("human_decision")
+                or ("Not yet recorded" if latest else "—"),
+                "Risk Category": latest["risk_category"] if latest else "—",
             }
         )
 
@@ -298,7 +328,7 @@ def render_applications_directory_view() -> None:
     st.dataframe(pd.DataFrame(rows[:page_size]), width="stretch", hide_index=True)
 
     st.markdown("#### Quick Application Navigation")
-    sel_col, btn_det, btn_res, btn_doc = st.columns([2.5, 1, 1, 1])
+    sel_col, btn_det, btn_res, btn_rev, btn_doc = st.columns([2.2, 1, 1, 1, 1])
     with sel_col:
         target_id = st.selectbox(
             "Select Application Reference",
@@ -321,6 +351,14 @@ def render_applications_directory_view() -> None:
         if st.button("Underwriting Results", key="apps_go_results", width="stretch"):
             navigate_to(
                 "Underwriting Results", applicant_id=target_id, run_id=target_run_id
+            )
+            st.rerun()
+    with btn_rev:
+        st.write("")
+        st.write("")
+        if st.button("Review Queue", key="apps_go_review", width="stretch"):
+            navigate_to(
+                "Underwriter Review Queue", applicant_id=target_id, run_id=target_run_id
             )
             st.rerun()
     with btn_doc:
@@ -409,7 +447,72 @@ def render_application_details_view(
         )
 
     st.markdown("---")
-    st.markdown("#### Persisted Underwriting Run History")
+    case_summary = get_case_review_summary(chosen_id)
+    st.markdown(
+        "#### Underwriting Decision Status Separation (AI vs Pipeline vs Human Review)"
+    )
+    render_human_vs_ai_summary_panel(case_summary)
+
+    # Surface active Additional Information Requested / Investigation Instructions prominently
+    latest_rev = case_summary.get("latest_review") or {}
+    if case_summary["human_review_status"] in {
+        ReviewStatus.ADDITIONAL_INFO_REQUESTED.value,
+        ReviewStatus.INVESTIGATION_REQUIRED.value,
+    }:
+        req_text = latest_rev.get("additional_info_request") or latest_rev.get(
+            "investigation_instructions"
+        )
+        st.warning(
+            f"**Case Status `{case_summary['human_review_status']}`** (by `{latest_rev.get('reviewer_id', 'reviewer')}`): "
+            f"{req_text or 'Follow-up required.'}"
+        )
+        if case_summary.get("source_run_id"):
+            with st.expander(
+                "Record Additional Information / Return to Pending Review Queue",
+                expanded=False,
+            ):
+                f_handler = st.text_input(
+                    "Handler Identifier *",
+                    value="intake_staff_01",
+                    key=f"details_ret_handler_{chosen_id}",
+                )
+                f_notes = st.text_input(
+                    "Follow-Up Information Recorded *",
+                    value="",
+                    key=f"details_ret_notes_{chosen_id}",
+                )
+                c_ret1, c_ret2 = st.columns(2)
+                with c_ret1:
+                    if st.button(
+                        "Return Case to Pending Review Queue",
+                        key=f"details_btn_return_pending_{chosen_id}",
+                        width="stretch",
+                    ):
+                        ret_res = record_additional_info_return(
+                            source_run_id=case_summary["source_run_id"],
+                            application_id=chosen_id,
+                            reviewer_id=f_handler,
+                            info_response=f_notes,
+                        )
+                        if ret_res["saved"]:
+                            st.success(
+                                "Returned case to PENDING human review queue cleanly (AI history preserved)."
+                            )
+                            st.rerun()
+                        else:
+                            st.error(ret_res["error"])
+                with c_ret2:
+                    if st.button(
+                        "Upload Updated Documents in New Application →",
+                        key=f"details_btn_upload_new_docs_{chosen_id}",
+                        width="stretch",
+                    ):
+                        queue_existing_applicant_for_intake(data)
+                        navigate_to("New Application", applicant_id=chosen_id)
+                        st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### Persisted AI Underwriting Run History")
     history = get_applicant_run_history(chosen_id)
     if not history:
         st.info("No underwriting runs recorded yet for this application.")
@@ -459,7 +562,7 @@ def render_application_details_view(
         options=[r["run_id"] for r in history],
         key="details_hist_run_select",
     )
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
         if st.button(
             "Open in Underwriting Results →",
@@ -472,6 +575,18 @@ def render_application_details_view(
             st.rerun()
     with b2:
         if st.button(
+            "Open in Underwriter Review Queue →",
+            key="details_goto_review_queue",
+            width="stretch",
+        ):
+            navigate_to(
+                "Underwriter Review Queue",
+                applicant_id=chosen_id,
+                run_id=selected_hist_run,
+            )
+            st.rerun()
+    with b3:
+        if st.button(
             "Open in Audit History →",
             key="details_goto_audit",
             width="stretch",
@@ -481,39 +596,167 @@ def render_application_details_view(
             )
             st.rerun()
 
+    st.markdown("#### Append-Only Human Review History")
+    rev_hist = case_summary.get("application_review_history") or []
+    if rev_hist:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Review ID": ev["review_id"],
+                        "Source Run": ev["source_run_id"],
+                        "Timestamp (UTC)": str(ev["review_timestamp"])[:19].replace(
+                            "T", " "
+                        ),
+                        "Original AI Rec": ev["original_ai_recommendation"],
+                        "Transition": f"{ev['previous_review_status']} → {ev['new_review_status']}",
+                        "Human Decision": ev.get("human_decision")
+                        or "Not yet recorded",
+                        "Reviewer ID": ev["reviewer_id"],
+                        "Reason": ev["decision_reason"],
+                    }
+                    for ev in rev_hist
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.caption(
+            "No human underwriter review events recorded yet for this application."
+        )
+
 
 def render_audit_history_view() -> None:
-    """Render immutable, read-only SQLite Audit History & run snapshot inspector."""
-    st.subheader("Immutable Audit History & Telemetry")
+    """Render immutable, read-only SQLite AI & Human Review Audit Ledger."""
+    st.subheader("Immutable Audit History & Human Review Ledger")
     st.caption(
-        "Read-only compliance ledger from SQLite (`underwriting_runs`). No record editing, deletion, or manual "
-        "officer override exists in this stage (officer override workflows belong to Stage 6)."
+        "Read-only compliance ledger combining AI pipeline executions (`underwriting_runs`) and "
+        "append-only human underwriter review events (`human_review_events`). Editing or deleting historical audit records is prohibited."
     )
 
-    f1, f2, f3, f4, f5 = st.columns(5)
+    view_mode = st.radio(
+        "Audit Stream Filter",
+        options=["All Audit Events", "AI Underwriting Runs", "Human Review Events"],
+        horizontal=True,
+        key="audit_event_stream_mode",
+    )
+
+    f1, f2, f3, f4, f5, f6 = st.columns(6)
     f_app = f1.text_input(
         "Applicant Ref Filter", value="", key="audit_filter_app"
     ).strip()
-    f_rec = f2.selectbox(
-        "Recommendation",
+    f_rev_id = f2.text_input(
+        "Reviewer ID Filter", value="", key="audit_filter_reviewer"
+    ).strip()
+    f_rec = f3.selectbox(
+        "AI Recommendation",
         options=["ALL", "APPROVE", "REJECT", "MANUAL_REVIEW"],
         key="audit_filter_rec",
     )
-    f_pipe = f3.selectbox(
+    f_pipe = f4.selectbox(
         "Pipeline Status",
         options=["ALL", "SUCCESS", "PARTIAL_SUCCESS", "FAILED"],
         key="audit_filter_pipe",
     )
-    f_risk = f4.selectbox(
+    f_risk = f5.selectbox(
         "Risk Category",
         options=["ALL", "LOW", "MEDIUM", "HIGH", "BORDERLINE", "UNAVAILABLE"],
         key="audit_filter_risk",
     )
-    f_anom = f5.selectbox(
+    f_anom = f6.selectbox(
         "Anomaly Severity",
         options=["ALL", "NONE", "LOW", "MEDIUM", "HIGH", "UNAVAILABLE"],
         key="audit_filter_anom",
     )
+
+    if view_mode in ("All Audit Events", "Human Review Events"):
+        st.markdown(
+            "### Human Underwriter Review Events (`HUMAN_REVIEW_EVENT` — Append-Only)"
+        )
+        hr_events = get_human_review_events(
+            application_id_prefix=f_app or None,
+            reviewer_id=f_rev_id or None,
+            human_decision=None,
+            limit=300,
+        )
+        if f_rec != "ALL":
+            hr_events = [
+                ev for ev in hr_events if ev.get("original_ai_recommendation") == f_rec
+            ]
+        if f_pipe != "ALL":
+            hr_events = [
+                ev for ev in hr_events if ev.get("original_pipeline_status") == f_pipe
+            ]
+
+        if hr_events:
+            hr_rows = [
+                {
+                    "Event Type": ev.get("event_type", "HUMAN_REVIEW_EVENT"),
+                    "Review ID": ev["review_id"],
+                    "Application": ev["application_id"],
+                    "Source AI Run": ev["source_run_id"],
+                    "Original AI Rec": ev["original_ai_recommendation"],
+                    "Status Transition": f"{ev['previous_review_status']} → {ev['new_review_status']}",
+                    "Human Decision": ev.get("human_decision") or "Not yet recorded",
+                    "Reviewer ID": ev["reviewer_id"],
+                    "Correction?": (
+                        f"Yes (Parent: {ev.get('parent_review_id')})"
+                        if ev.get("is_correction")
+                        else "No"
+                    ),
+                    "Timestamp (UTC)": str(ev["review_timestamp"])[:19].replace(
+                        "T", " "
+                    ),
+                }
+                for ev in hr_events
+            ]
+            st.dataframe(pd.DataFrame(hr_rows), width="stretch", hide_index=True)
+
+            sel_rev_id = st.selectbox(
+                "Inspect Human Review Event Details (Read-Only)",
+                options=[ev["review_id"] for ev in hr_events],
+                key="audit_inspect_human_rev_id",
+            )
+            ev_obj = next(ev for ev in hr_events if ev["review_id"] == sel_rev_id)
+            with st.expander(
+                f"Human Review Record Snapshot: `{sel_rev_id}`", expanded=True
+            ):
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                rc1.metric("Reviewer ID", ev_obj["reviewer_id"])
+                rc2.metric("Original AI Rec", ev_obj["original_ai_recommendation"])
+                rc3.metric("Review Status", ev_obj["new_review_status"])
+                rc4.metric(
+                    "Human Decision", ev_obj.get("human_decision") or "Not yet recorded"
+                )
+                st.write(f"**Decision Reason:** {ev_obj['decision_reason']}")
+                if ev_obj.get("comments"):
+                    st.write(f"**Comments (Masked):** {ev_obj['comments']}")
+                if ev_obj.get("additional_info_request"):
+                    st.write(
+                        f"**Additional Info Requested:** {ev_obj['additional_info_request']}"
+                    )
+                if ev_obj.get("additional_info_response"):
+                    st.write(
+                        f"**Additional Info Follow-Up:** {ev_obj['additional_info_response']}"
+                    )
+                if ev_obj.get("investigation_instructions"):
+                    st.write(
+                        f"**Investigation Instructions:** {ev_obj['investigation_instructions']}"
+                    )
+                if ev_obj.get("is_correction"):
+                    st.info(
+                        f"**Linked Correction Event:** Corrects prior event `{ev_obj.get('parent_review_id')}` — "
+                        f"{ev_obj.get('correction_explanation')}"
+                    )
+        else:
+            st.info("No human review events match the active filters.")
+
+    if view_mode == "Human Review Events":
+        return
+
+    st.markdown("---")
+    st.markdown("### AI Underwriting Pipeline Runs (`UNDERWRITING_RUN`)")
 
     runs = get_audit_runs(
         application_id_prefix=f_app or None,
@@ -633,6 +876,37 @@ def render_audit_run_inspection(run: Dict[str, Any]) -> None:
         negative_factors=run.get("negative_factors") or [],
         blocking_factors=run.get("blocking_factors") or [],
     )
+
+    linked_reviews = get_review_history_for_run(run["run_id"])
+    st.markdown("**Linked Human Underwriter Review Events:**")
+    if linked_reviews:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Review ID": ev["review_id"],
+                        "Transition": f"{ev['previous_review_status']} → {ev['new_review_status']}",
+                        "Human Decision": ev.get("human_decision")
+                        or "Not yet recorded",
+                        "Reviewer ID": ev["reviewer_id"],
+                        "Reason": ev["decision_reason"],
+                        "Correction?": (
+                            f"Yes (Parent: {ev.get('parent_review_id')})"
+                            if ev.get("is_correction")
+                            else "No"
+                        ),
+                        "Timestamp (UTC)": str(ev["review_timestamp"])[:19].replace(
+                            "T", " "
+                        ),
+                    }
+                    for ev in linked_reviews
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.caption("No human review events linked to this run yet (Status: PENDING).")
 
     if snap:
         with st.expander(

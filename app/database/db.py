@@ -73,6 +73,8 @@ def init_db() -> None:
 
     from app.database.applications import init_applications_table
     from app.database.audit import init_audit_table
+    from app.database.reviews import init_reviews_table
 
     init_applications_table()
     init_audit_table()
+    init_reviews_table()

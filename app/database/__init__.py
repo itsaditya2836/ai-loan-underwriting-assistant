@@ -18,10 +18,22 @@ from app.database.audit import (
     save_underwriting_run_safe,
 )
 from app.database.db import get_database_connection, init_db
+from app.database.reviews import (
+    find_duplicate_review_submission,
+    get_human_review_by_id,
+    get_human_review_events,
+    get_latest_review_for_application,
+    get_latest_review_for_run,
+    get_review_history_for_application,
+    get_review_history_for_run,
+    init_reviews_table,
+    insert_human_review_event,
+)
 
 __all__ = [
     "count_submitted_applications",
     "find_duplicate_submission",
+    "find_duplicate_review_submission",
     "get_submitted_application",
     "init_applications_table",
     "list_submitted_applications",
@@ -29,6 +41,8 @@ __all__ = [
     "get_database_connection",
     "init_db",
     "init_audit_table",
+    "init_reviews_table",
+    "insert_human_review_event",
     "save_underwriting_run",
     "save_underwriting_run_safe",
     "get_audit_runs",
@@ -36,5 +50,11 @@ __all__ = [
     "get_applicant_run_history",
     "get_audit_analytics_summary",
     "get_audit_daily_trends",
+    "get_human_review_by_id",
+    "get_human_review_events",
+    "get_latest_review_for_application",
+    "get_latest_review_for_run",
     "get_latest_runs_per_application",
+    "get_review_history_for_application",
+    "get_review_history_for_run",
 ]
