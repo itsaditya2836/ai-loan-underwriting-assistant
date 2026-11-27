@@ -88,11 +88,14 @@ AI-Loan-Underwriting-Assistant/
 │   │   ├── risk_agent.py           # Repayment and credit risk assessment agent
 │   │   ├── fraud_agent.py          # Cross-document inconsistency and fraud agent
 │   │   └── decision_agent.py       # Synthesis and explainable decision agent
-│   ├── document_processing/        # File parsing and OCR utilities
+│   ├── document_processing/        # Stage 3 PDF, OCR, validation & classification pipeline
 │   │   ├── __init__.py
-│   │   ├── pdf_reader.py           # PyMuPDF-based text and image extraction
-│   │   ├── ocr.py                  # pytesseract wrapper for image OCR
-│   │   └── extractor.py            # Key-value field parser
+│   │   ├── document_package.py     # Hybrid package orchestrator, duplicates & conflicts
+│   │   ├── extractor.py            # Multi-signal classifier & page-aware contextual parser
+│   │   ├── ocr.py                  # Configurable local Tesseract OCR + Pillow preprocessing
+│   │   ├── pdf_reader.py           # Page-level PDF reader supporting digital, scanned & mixed PDFs
+│   │   ├── security.py             # File validation, size/page bounds, active-content scan & PII masking
+│   │   └── validation.py           # Domain field validation & heuristic confidence scoring
 │   ├── eligibility/                # Centralized underwriting eligibility engine
 │   │   ├── __init__.py
 │   │   ├── policy.py               # Configurable EligibilityPolicy thresholds
@@ -330,6 +333,20 @@ DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
 - **Honest Held-Out Test Performance (`N=20`)**: `95.00%` accuracy (`19/20`), `93.75%` balanced accuracy, `0.9365` macro-F1 (`1.0000` OVR ROC-AUC), compared against `60.00%` accuracy (`0.5655` macro-F1) for the deterministic weighted baseline (`RiskScorer`) on the same 20 held-out applicants.
 - **Fail-Fast Artifact Loading**: `MLRiskModel` validates serialized artifact and metadata feature contracts on load and refuses to silently auto-train or emit fabricated default risk scores if artifacts are missing or corrupted.
 - **Synthetic Data Scope Limitation**: Metrics come from a small 100-row synthetic cohort (not empirical historical bank defaults) and must never be represented as real-world credit performance. Protected attributes (`gender`) are strictly excluded from model features and audited solely for dataset representation.
+
+### Stage 3 — Document Intelligence Architecture & Safeguards
+
+- **Page-Level & Mixed-PDF Processing (`PDFReader` + `DocumentPackageProcessor`)**: Inspects every PDF page independently to track `native_text`, `ocr`, `empty`, and `error` page counts. Mixed PDFs containing both selectable digital text and rasterized images trigger local OCR selectively **only** on pages needing OCR, preserving per-page provenance (`page_number`) across extracted fields.
+- **OCR Preprocessing Workflow (`OCRProcessor` / `OCRConfig`)**: Converts rendered scans (default 300 DPI) cleanly via Pillow/NumPy preprocessing — upscaling low-resolution crops (`< 1200 px`), grayscale conversion, Tesseract OSD orientation correction (`min_osd_confidence >= 2.0`), selective autocontrast, and selective Otsu thresholding/median denoising — using `--oem 3 --psm 3` with bounded page-level caching.
+- **Multi-Signal Document Classification**: Classifies `loan_application`, `identity_proof`, `address_proof`, `salary_slip`, `income_statement`, `employment_proof`, and `bank_statement` using weighted heading, domain terminology, and field-pattern signals. Single generic keywords or closely competing documents resolve to `unknown` (`UNCLASSIFIED` / `AMBIGUOUS`).
+- **Field Validation & Heuristic Confidence (`validation.py`)**: Distinguishes `valid`, `unverified`, `invalid`, `missing`, and `ambiguous` field states (rejecting negative income, out-of-range credit scores/ages, and invalid calendar dates). Heuristic extraction confidence reflects extraction method, contextual label specificity, text quality, and validation status — strictly separated from classification confidence, credit risk score, and decision confidence.
+- **Package Intelligence & Security Safeguards (`security.py`)**: Detects binary SHA-256 and content duplicates (`duplicate_documents`), preserves multi-document field conflicts (`field_conflicts`), validates `.pdf` extensions and `%PDF-` signatures, enforces max file size (`25 MB`) and max page count (`100`), rejects password-protected PDFs safely, flags `/JavaScript`/`/OpenAction` markers passively without execution, and masks identifiers (`account_number`, `id_ref`) in logs.
+- **Limitations**: Synthetic benchmark covers 30 applicant packages (`115` single-page PDFs) plus an ephemeral mixed-PDF fixture; it verifies deterministic pipeline reliability rather than arbitrary third-party real-world document layouts.
+
+```bash
+# Run Stage 3 document classification, OCR, coverage & mixed-PDF evaluation
+.venv/bin/python scripts/evaluate_extraction.py
+```
 
 ---
 

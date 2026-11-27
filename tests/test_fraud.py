@@ -19,9 +19,11 @@ from app.fraud.scoring import AnomalyScorer
 from app.schemas.anomaly import AnomalyFlag, AnomalyResult, AnomalySeverity
 from app.schemas.applicant import (
     Applicant,
+    ClassifiedDocument,
     DecisionResult,
     DocumentPackageResult,
     EligibilityResult,
+    ExtractedField,
     RecommendationType,
     RiskResult,
 )
@@ -385,3 +387,164 @@ def test_database_connection(tmp_path, monkeypatch):
             assert row["alive"] == 1
     finally:
         get_settings.cache_clear()
+
+
+def _mk_ef(name: str, val, doc: str, status: str = "valid") -> ExtractedField:
+    return ExtractedField(
+        field_name=name,
+        value=val,
+        confidence=0.92,
+        source_document=doc,
+        evidence=f"{name}={val}",
+        validation_status=status,
+    )
+
+
+def test_cross_document_salary_vs_bank_and_employer_formatting_checks():
+    """Verify Task 7 cross-doc tolerance, salary vs bank, multi-slip, employer suffix, and missing/invalid safety."""
+    detector = CrossDocumentAnomalyDetector()
+
+    # 1. Clean formatting variance (corporate suffix dot + small <15% salary/credit variance)
+    clean_pkg = DocumentPackageResult(
+        applicant_id="APP_CROSS_OK",
+        package_dir="/tmp/ok",
+        documents_found=[
+            ClassifiedDocument(
+                document_id="D1",
+                file_path="loan_application.pdf",
+                document_type="loan_application",
+                classification_confidence=0.95,
+                classification_evidence="app",
+                extracted_fields={
+                    "applicant_name": _mk_ef(
+                        "applicant_name", "Rohan Mehta", "loan_application.pdf"
+                    ),
+                    "employer_name": _mk_ef(
+                        "employer_name",
+                        "TechNova Solutions Pvt. Ltd.",
+                        "loan_application.pdf",
+                    ),
+                    "monthly_income": _mk_ef(
+                        "monthly_income", 100000.0, "loan_application.pdf"
+                    ),
+                },
+            ),
+            ClassifiedDocument(
+                document_id="D2",
+                file_path="salary_slip.pdf",
+                document_type="salary_slip",
+                classification_confidence=0.95,
+                classification_evidence="slip",
+                extracted_fields={
+                    "employee_name": _mk_ef(
+                        "employee_name", "Mr. Rohan Mehta", "salary_slip.pdf"
+                    ),
+                    "employer_name": _mk_ef(
+                        "employer_name", "TechNova Solutions Pvt Ltd", "salary_slip.pdf"
+                    ),
+                    "net_salary": _mk_ef("net_salary", 100000.0, "salary_slip.pdf"),
+                },
+            ),
+            ClassifiedDocument(
+                document_id="D3",
+                file_path="bank_statement.pdf",
+                document_type="bank_statement",
+                classification_confidence=0.95,
+                classification_evidence="bank",
+                extracted_fields={
+                    "account_holder": _mk_ef(
+                        "account_holder", "Rohan Mehta", "bank_statement.pdf"
+                    ),
+                    "salary_credit": _mk_ef(
+                        "salary_credit", 92000.0, "bank_statement.pdf"
+                    ),
+                },
+            ),
+        ],
+    )
+    res_ok = detector.detect_anomalies(clean_pkg)
+    assert res_ok.has_anomalies is False
+
+    # 2. Direct salary slip vs bank credit discrepancy (without loan application)
+    mismatch_pkg = DocumentPackageResult(
+        applicant_id="APP_CROSS_DIFF",
+        package_dir="/tmp/diff",
+        documents_found=[
+            ClassifiedDocument(
+                document_id="D2",
+                file_path="salary_slip.pdf",
+                document_type="salary_slip",
+                classification_confidence=0.95,
+                classification_evidence="slip",
+                extracted_fields={
+                    "employee_name": _mk_ef(
+                        "employee_name", "Rohan Mehta", "salary_slip.pdf"
+                    ),
+                    "employer_name": _mk_ef(
+                        "employer_name", "Alpha Beta Corp", "salary_slip.pdf"
+                    ),
+                    "net_salary": _mk_ef("net_salary", 100000.0, "salary_slip.pdf"),
+                },
+            ),
+            ClassifiedDocument(
+                document_id="D3",
+                file_path="bank_statement.pdf",
+                document_type="bank_statement",
+                classification_confidence=0.95,
+                classification_evidence="bank",
+                extracted_fields={
+                    "account_holder": _mk_ef(
+                        "account_holder", "Rohan Mehta", "bank_statement.pdf"
+                    ),
+                    "salary_credit": _mk_ef(
+                        "salary_credit", 55000.0, "bank_statement.pdf"
+                    ),
+                },
+            ),
+            ClassifiedDocument(
+                document_id="D4",
+                file_path="employment_proof.pdf",
+                document_type="employment_proof",
+                classification_confidence=0.95,
+                classification_evidence="emp",
+                extracted_fields={
+                    "applicant_name": _mk_ef(
+                        "applicant_name", "Rohan Mehta", "employment_proof.pdf"
+                    ),
+                    "employer_name": _mk_ef(
+                        "employer_name",
+                        "Completely Different Enterprise",
+                        "employment_proof.pdf",
+                    ),
+                },
+            ),
+        ],
+    )
+    res_diff = detector.detect_anomalies(mismatch_pkg)
+    rule_ids = {f.rule_id for f in res_diff.flags}
+    assert "ANOM-INC-001" in rule_ids
+    assert "ANOM-DOC-001" in rule_ids
+
+    # 3. Invalid fields are ignored cleanly without triggering bogus fraud flags
+    invalid_pkg = DocumentPackageResult(
+        applicant_id="APP_INVALID",
+        package_dir="/tmp/inv",
+        documents_found=[
+            ClassifiedDocument(
+                document_id="D2",
+                file_path="salary_slip.pdf",
+                document_type="salary_slip",
+                classification_confidence=0.95,
+                classification_evidence="slip",
+                extracted_fields={
+                    "net_salary": _mk_ef(
+                        "net_salary", -1000.0, "salary_slip.pdf", status="invalid"
+                    ),
+                },
+            )
+        ],
+        documents_missing=["bank_statement"],
+    )
+    res_inv = detector.detect_anomalies(invalid_pkg)
+    assert res_inv.has_anomalies is False
+    assert "bank_statement" in res_inv.missing_evidence

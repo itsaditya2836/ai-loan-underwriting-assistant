@@ -378,12 +378,12 @@ class DecisionResult(BaseModel):
 
 
 class ExtractedField(BaseModel):
-    """Traceable extracted entity with provenance, confidence, and source evidence."""
+    """Traceable extracted entity with provenance, confidence, validation, and evidence."""
 
     field_name: str = Field(..., description="Canonical entity/attribute name")
     value: Any = Field(..., description="Extracted and normalized field value")
     confidence: float = Field(
-        ..., ge=0.0, le=1.0, description="Deterministic extraction confidence score"
+        ..., ge=0.0, le=1.0, description="Heuristic extraction confidence score"
     )
     source_document: str = Field(
         ..., description="Filename or identifier of the originating document"
@@ -394,10 +394,26 @@ class ExtractedField(BaseModel):
     evidence: str = Field(
         ..., description="Exact textual excerpt or line supporting extraction"
     )
+    extraction_method: str = Field(
+        default="regex_digital",
+        description="Extraction mechanism (regex_digital, regex_ocr, table_parser, header_positional, fallback)",
+    )
+    validation_status: str = Field(
+        default="valid",
+        description="Validation state: valid, unverified, invalid, missing, or ambiguous",
+    )
+    validation_message: Optional[str] = Field(
+        default=None,
+        description="Explanation when field is invalid, unverified, ambiguous, or missing",
+    )
+    masked_value: Optional[str] = Field(
+        default=None,
+        description="Safe masked representation for sensitive identifiers/account numbers",
+    )
 
 
 class ClassifiedDocument(BaseModel):
-    """Processed document metadata, classification, and extracted structured fields."""
+    """Processed document metadata, classification, page telemetry, and extracted fields."""
 
     document_id: str = Field(..., description="Unique document identifier")
     file_path: str = Field(..., description="Physical filesystem path of document")
@@ -411,17 +427,51 @@ class ClassifiedDocument(BaseModel):
     classification_evidence: str = Field(
         ..., description="Keywords or structural markers identifying document type"
     )
+    classification_status: str = Field(
+        default="CLASSIFIED",
+        description="Classification outcome: CLASSIFIED, AMBIGUOUS, or UNCLASSIFIED",
+    )
+    classification_signals: List[str] = Field(
+        default_factory=list,
+        description="Individual weighted classification signals detected in text",
+    )
     is_scanned: bool = Field(
         default=False,
-        description="Indicates if document was rasterized/scanned requiring OCR",
+        description="Indicates if document or any page required OCR",
+    )
+    extraction_method: str = Field(
+        default="digital",
+        description="Document-level text extraction mode: digital, ocr, hybrid, or failed",
     )
     page_count: int = Field(default=1, ge=1, description="Total number of pages")
+    native_text_pages: int = Field(
+        default=0,
+        ge=0,
+        description="Number of pages extracted with native digital text",
+    )
+    ocr_pages: int = Field(
+        default=0, ge=0, description="Number of pages processed via OCR"
+    )
+    empty_pages: int = Field(
+        default=0, ge=0, description="Number of blank or zero-text pages"
+    )
+    failed_pages: int = Field(
+        default=0, ge=0, description="Number of pages that failed extraction"
+    )
     raw_text: str = Field(
-        default="", description="Full extracted text (direct PDF or OCR)"
+        default="", description="Full extracted text (direct PDF, OCR, or hybrid)"
+    )
+    content_sha256: Optional[str] = Field(
+        default=None,
+        description="SHA-256 hash of source file contents for duplicate detection",
     )
     extracted_fields: Dict[str, ExtractedField] = Field(
         default_factory=dict,
-        description="Mapping of field names to ExtractedField records",
+        description="Mapping of usable field names to ExtractedField records",
+    )
+    field_validations: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Complete field validation audit including valid, unverified, invalid, missing, and ambiguous",
     )
 
 
@@ -447,10 +497,11 @@ class DocumentPackageResult(BaseModel):
     )
     ocr_used: bool = Field(
         default=False,
-        description="Indicates whether OCR was triggered for any document in package",
+        description="Indicates whether OCR was triggered for any document/page in package",
     )
     processing_status: str = Field(
-        default="completed", description="Overall intake status (completed, failed)"
+        default="completed",
+        description="Overall intake status (completed, completed_with_errors, failed)",
     )
     processing_errors: List[str] = Field(
         default_factory=list,
@@ -458,7 +509,50 @@ class DocumentPackageResult(BaseModel):
     )
     all_extracted_fields: Dict[str, ExtractedField] = Field(
         default_factory=dict,
-        description="Flat aggregated key-value map of all extracted fields across documents",
+        description="Flat aggregated key-value map of all usable extracted fields across documents",
+    )
+    total_pages: int = Field(
+        default=0, ge=0, description="Total pages read across package"
+    )
+    native_text_pages: int = Field(
+        default=0, ge=0, description="Total pages extracted via native PDF text"
+    )
+    ocr_pages: int = Field(
+        default=0, ge=0, description="Total pages extracted via local OCR"
+    )
+    empty_pages: int = Field(
+        default=0, ge=0, description="Total blank/unreadable pages encountered"
+    )
+    failed_pages: int = Field(
+        default=0, ge=0, description="Total pages whose extraction failed"
+    )
+    unclassified_documents: List[str] = Field(
+        default_factory=list,
+        description="Filenames that could not be reliably classified into a known document type",
+    )
+    duplicate_documents: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Detected exact or content-duplicate documents in package",
+    )
+    field_conflicts: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description="Conflicting field values preserved across multiple documents in package",
+    )
+    missing_fields: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Expected document fields not found per classified document",
+    )
+    invalid_fields: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description="Fields rejected by field validation per document",
+    )
+    ambiguous_fields: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description="Fields with conflicting ambiguous matches within a document",
+    )
+    security_warnings: List[str] = Field(
+        default_factory=list,
+        description="Passive security warnings discovered during PDF validation",
     )
 
 

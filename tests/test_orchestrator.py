@@ -332,9 +332,7 @@ def test_regression_missing_required_documents_preserved(
     assert "bank_statement" in analysis.document_result.documents_missing
     assert analysis.eligibility_result is not None
     assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
-    assert (
-        "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
-    )
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
     assert analysis.anomaly_result is not None
     assert "bank_statement" in analysis.anomaly_result.missing_evidence
     assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
@@ -391,13 +389,8 @@ def test_regression_failed_or_empty_document_package_fallback():
 
     assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
     assert analysis.eligibility_result is not None
-    assert (
-        analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
-    )
-    assert (
-        "DOCUMENTS_COMPLETE"
-        in analysis.eligibility_result.rules_requiring_review
-    )
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
     assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_passed
     assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
     assert any(r.code == "DEC-DOC-001" for r in decision.reasons)
@@ -414,13 +407,8 @@ def test_regression_document_agent_exception_qualifying_profile():
 
     assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
     assert analysis.eligibility_result is not None
-    assert (
-        analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
-    )
-    assert (
-        "DOCUMENTS_COMPLETE"
-        in analysis.eligibility_result.rules_requiring_review
-    )
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
     assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
 
 
@@ -436,10 +424,7 @@ def test_regression_disqualifying_profile_without_documents(
     assert analysis.eligibility_result is not None
     assert analysis.eligibility_result.status == EligibilityStatus.INELIGIBLE
     assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_failed
-    assert (
-        "DOCUMENTS_COMPLETE"
-        in analysis.eligibility_result.rules_requiring_review
-    )
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
     assert decision.recommendation == DecisionOutcome.REJECT
     assert any(r.code == "DEC-ELIG-001" for r in decision.reasons)
 
@@ -465,7 +450,4 @@ def test_regression_disqualifying_profile_without_documents(
     assert "MIN_CREDIT_SCORE" in res_custom.eligibility_result.rules_failed
     assert "MIN_MONTHLY_INCOME" in res_custom.eligibility_result.rules_failed
     assert res_custom.eligibility_result.dti_ratio == 0.0
-    assert (
-        "DOCUMENTS_COMPLETE"
-        in res_custom.eligibility_result.rules_requiring_review
-    )
+    assert "DOCUMENTS_COMPLETE" in res_custom.eligibility_result.rules_requiring_review

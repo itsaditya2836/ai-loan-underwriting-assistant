@@ -8,7 +8,14 @@ from app.document_processing.extractor import (
     DocumentExtractor,
     parse_currency,
 )
-from app.document_processing.pdf_reader import PDFReader
+from app.document_processing.pdf_reader import PageContent, PDFReader
+from app.document_processing.security import mask_identifier, mask_sensitive_text
+from app.document_processing.validation import (
+    VALIDATION_AMBIGUOUS,
+    VALIDATION_INVALID,
+    VALIDATION_MISSING,
+    VALIDATION_VALID,
+)
 
 DOCUMENTS_DIR = "data/documents"
 
@@ -139,3 +146,155 @@ def test_bank_statement_field_extraction(
     assert fields["salary_credit"].value == 37500.0
     assert fields["emi_debit"].value == 16000.0
     assert fields["transaction_count"].value >= 10
+
+
+def test_classification_single_keyword_rejected_and_ambiguous_flagged(
+    extractor: DocumentExtractor,
+):
+    """Single generic keyword does not classify; competing markers trigger AMBIGUOUS."""
+    weak = extractor.classify_document_detailed(
+        "Thank you. This memo briefly mentions Basic Salary in passing.",
+        filename="random.pdf",
+    )
+    assert weak.document_type == "unknown"
+    assert weak.status == "UNCLASSIFIED"
+    assert weak.confidence < 0.45
+
+    ambiguous_text = (
+        "ACCOUNT STATEMENT\n"
+        "ACCOUNT HOLDER: Test User\n"
+        "STATEMENT PERIOD: 01-Aug-2026 to 31-Aug-2026\n"
+        "PAYSLIP FOR THE MONTH\n"
+        "EARNINGS COMPONENT\n"
+        "DEDUCTIONS COMPONENT\n"
+        "BASIC SALARY: 40,000.00\n"
+    )
+    amb = extractor.classify_document_detailed(ambiguous_text, filename="mixed.pdf")
+    assert amb.document_type == "unknown"
+    assert amb.status == "AMBIGUOUS"
+    assert amb.is_ambiguous is True
+
+
+def test_classification_and_extraction_for_address_and_employment_proof(
+    extractor: DocumentExtractor,
+):
+    """Verify support for address_proof and employment_proof multi-signal classification & fields."""
+    addr_text = (
+        "PROOF OF ADDRESS\n"
+        "Full Name: Kavita Nair\n"
+        "Residential Address: 42 MG Road, Indiranagar, Bengaluru\n"
+        "Postal Code: 560038\n"
+        "Consumer ID: CON-88991\n"
+        "Issue Date: 10-Jun-2026\n"
+    )
+    clf_addr = extractor.classify_document_detailed(addr_text)
+    assert clf_addr.document_type == "address_proof"
+    assert clf_addr.status == "CLASSIFIED"
+    addr_fields = extractor.extract_fields(addr_text, "address_proof")
+    assert addr_fields["applicant_name"].value == "Kavita Nair"
+    assert "MG Road" in addr_fields["address"].value
+    assert addr_fields["issue_date"].value == "10-Jun-2026"
+
+    emp_text = (
+        "CERTIFICATE OF EMPLOYMENT\n"
+        "HUMAN RESOURCES DEPARTMENT\n"
+        "Employee Name: Kavita Nair\n"
+        "Employee ID: EMP-APP0201\n"
+        "Employer Name: Orion Cloud Systems Pvt Ltd\n"
+        "Designation: Senior Architect\n"
+        "Date of Joining: 15-Mar-2021\n"
+    )
+    clf_emp = extractor.classify_document_detailed(emp_text)
+    assert clf_emp.document_type == "employment_proof"
+    emp_fields = extractor.extract_fields(emp_text, "employment_proof")
+    assert emp_fields["applicant_name"].value == "Kavita Nair"
+    assert emp_fields["employer_name"].value == "Orion Cloud Systems Pvt Ltd"
+    assert emp_fields["designation"].value == "Senior Architect"
+    assert emp_fields["employment_start_date"].value == "15-Mar-2021"
+
+
+def test_field_validation_invalid_missing_zeros_ambiguity_and_context_guards(
+    extractor: DocumentExtractor,
+):
+    """Verify validation rejects negative/invalid values, preserves zeros, and guards context."""
+    bad_loan_text = (
+        "SYNTHETIC LOAN APPLICATION FORM\n"
+        "Applicant ID: APP8888\n"
+        "Full Name: Invalid Case\n"
+        "Submission Date: 32-Feb-2026\n"
+        "Experience / Tenure: 10 Years\n"
+        "Employment Type: SALARIED\n"
+        "Declared Monthly Income: INR -50,000.00\n"
+        "Existing Monthly EMI: INR 0.00\n"
+        "Declared Bank Balance: INR 0.00\n"
+        "Number of Dependents: 0\n"
+        "Self-Reported Credit Score: 999\n"
+        "Requested Amount: INR 250,000.00\n"
+        "Requested Tenure: 36 Months\n"
+    )
+    usable, validations = extractor.extract_fields_with_diagnostics(
+        bad_loan_text, "loan_application", "loan_application.pdf"
+    )
+
+    # Negative income, invalid calendar date, and credit_score > 900 rejected
+    assert "monthly_income" not in usable
+    assert "submission_date" not in usable
+    assert "credit_score" not in usable
+    assert validations["monthly_income"]["validation_status"] == VALIDATION_INVALID
+    assert validations["submission_date"]["validation_status"] == VALIDATION_INVALID
+    assert validations["credit_score"]["validation_status"] == VALIDATION_INVALID
+
+    # Unlabeled '10 Years' experience does NOT wrongly match age
+    assert "age" not in usable
+    assert validations["age"]["validation_status"] == VALIDATION_MISSING
+    assert usable["employment_years"].value == 10.0
+
+    # Zero-valued legitimate fields preserved
+    assert usable["existing_emi"].value == 0.0
+    assert usable["bank_balance"].value == 0.0
+    assert usable["number_of_dependents"].value == 0
+    assert usable["existing_emi"].validation_status == VALIDATION_VALID
+
+    # Non-salary bank deposit is tracked as other_income, NOT salary_credit
+    bank_no_sal = (
+        "SYNTHETIC APEX BANK OF INDIA\n"
+        "ACCOUNT STATEMENT\n"
+        "Account Holder: Priya Nair\n"
+        "Statement Period: 01-Aug-2026 to 31-Aug-2026\n"
+        "Account Number: SYN-ACC-9041-APP0001-82\n"
+        "14-Aug-2026 INTEREST CREDIT - Q2 TXN0107 - 850.00 156,749.00\n"
+    )
+    b_fields = extractor.extract_fields(bank_no_sal, "bank_statement")
+    assert "salary_credit" not in b_fields
+    assert b_fields["other_income"].value == 850.0
+    assert b_fields["account_number"].masked_value == ("*" * 19) + "1-82"
+    assert "APP0001" not in mask_sensitive_text("SYN-ACC-9041-APP0001-82")
+    assert mask_identifier("SYN-ID-APP0001-33737").endswith("3737")
+
+    # Multi-page provenance & conflicting candidate ambiguity
+    pages = [
+        PageContent(
+            page_number=1,
+            text="Name: Aarti Rao\nNET SALARY PAYABLE: INR 50,000.00",
+            char_count=50,
+            is_scanned=False,
+            has_images=False,
+            extraction_method="native_text",
+        ),
+        PageContent(
+            page_number=2,
+            text="Identifier: EMP-APP0301\nNET SALARY PAYABLE: INR 65,000.00",
+            char_count=55,
+            is_scanned=True,
+            has_images=True,
+            extraction_method="ocr",
+        ),
+    ]
+    mp_usable, mp_val = extractor.extract_fields_with_diagnostics(
+        "", "salary_slip", "slip.pdf", pages=pages
+    )
+    assert mp_usable["employee_name"].page_number == 1
+    assert mp_usable["applicant_id"].page_number == 2
+    assert mp_usable["applicant_id"].extraction_method == "regex_ocr"
+    assert "net_salary" not in mp_usable
+    assert mp_val["net_salary"]["validation_status"] == VALIDATION_AMBIGUOUS

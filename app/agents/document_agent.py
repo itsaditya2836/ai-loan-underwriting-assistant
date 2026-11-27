@@ -1,16 +1,21 @@
 """Document Intake Agent module.
 
-Responsible for ingesting loan application documents, orchestrating PDF/image
-processing, triggering OCR when required, and extracting structured, traceable applicant data.
+Responsible for ingesting loan application documents, coordinating page-level
+PDF reading, selective OCR on scanned/mixed pages, multi-signal classification,
+and structured, validated entity extraction.
 """
 
+from __future__ import annotations
+
 import os
+from dataclasses import replace
 from typing import List, Optional
 
 from app.document_processing.document_package import DocumentPackageProcessor
 from app.document_processing.extractor import DocumentExtractor
 from app.document_processing.ocr import OCRProcessor
-from app.document_processing.pdf_reader import PDFReader
+from app.document_processing.pdf_reader import PageContent, PDFReader
+from app.document_processing.security import mask_identifier
 from app.schemas.applicant import Document, DocumentPackageResult
 from app.utils.helpers import get_logger
 
@@ -18,11 +23,7 @@ logger = get_logger(__name__)
 
 
 class DocumentIntakeAgent:
-    """Agent responsible for document ingestion, local OCR, and field extraction.
-
-    Serves as a deterministic intake layer for applicant document packages.
-    Produces structured, explainable findings with source evidence and confidence scores.
-    """
+    """Agent responsible for document ingestion, local OCR, and field extraction."""
 
     def __init__(
         self,
@@ -44,31 +45,12 @@ class DocumentIntakeAgent:
     def process_package(
         self, applicant_id: str, package_dir: Optional[str] = None
     ) -> DocumentPackageResult:
-        """Process an entire applicant document package directory.
-
-        Args:
-            applicant_id: Unique applicant identifier (e.g. 'APP0001').
-            package_dir: Directory containing applicant documents.
-                Defaults to 'data/documents/{applicant_id}'.
-
-        Returns:
-            DocumentPackageResult with classified documents, extracted fields,
-            evidence references, and missing document detection.
-        """
+        """Process an entire applicant document package directory."""
         dir_path = package_dir or os.path.join("data", "documents", applicant_id)
         return self.package_processor.process_package(applicant_id, dir_path)
 
     def process(self, documents: List[Document]) -> List[Document]:
-        """Process a list of Document schemas, populating extracted text and fields.
-
-        Maintains backward compatibility with the Stage 1 Document schema contract.
-
-        Args:
-            documents: List of input Document instances.
-
-        Returns:
-            List of updated Document instances with extracted fields and text.
-        """
+        """Process a list of Document schemas using page-level PDF + selective OCR."""
         processed_docs: List[Document] = []
         for doc in documents:
             if not doc.file_path or not os.path.exists(doc.file_path):
@@ -78,39 +60,76 @@ class DocumentIntakeAgent:
 
             try:
                 info = self.reader.read_pdf(doc.file_path)
-                doc_text = info.full_text
-                is_scanned = info.is_scanned
+                if info.error and not info.pages:
+                    raise RuntimeError(info.error)
 
-                if is_scanned:
-                    ocr_pages = self.ocr.ocr_pdf(doc.file_path)
-                    doc_text = "\n".join(p.text for p in ocr_pages)
+                merged_pages: List[PageContent] = [replace(p) for p in info.pages]
+                ocr_needed = [p.page_number for p in merged_pages if p.needs_ocr]
+                if ocr_needed:
+                    ocr_results = {
+                        r.page_number: r
+                        for r in self.ocr.ocr_pages(
+                            doc.file_path, page_numbers=ocr_needed
+                        )
+                    }
+                    for idx, p in enumerate(merged_pages):
+                        if (
+                            p.page_number in ocr_results
+                            and ocr_results[p.page_number].success
+                        ):
+                            ocr_txt = ocr_results[p.page_number].text
+                            merged_pages[idx] = replace(
+                                p,
+                                text=ocr_txt,
+                                char_count=len(ocr_txt.strip()),
+                                extraction_method="ocr",
+                                needs_ocr=False,
+                            )
 
+                doc_text = "\n".join(p.text for p in merged_pages if p.text).strip()
+                is_scanned = info.is_scanned or any(
+                    p.extraction_method == "ocr" for p in merged_pages
+                )
                 doc.extracted_text = doc_text
-                classified_type, conf, ev = self.extractor.classify_document(
+
+                if not doc_text:
+                    doc.status = "failed"
+                    processed_docs.append(doc)
+                    continue
+
+                classified_type, _, _ = self.extractor.classify_document(
                     doc_text, doc.file_path
                 )
                 if not doc.document_type or doc.document_type == "pending":
                     doc.document_type = classified_type
 
                 fields = self.extractor.extract_fields(
-                    doc_text,
-                    doc.document_type,
-                    doc.file_path,
+                    raw_text=doc_text,
+                    document_type=doc.document_type,
+                    filename=os.path.basename(doc.file_path),
                     is_scanned=is_scanned,
+                    pages=merged_pages,
                 )
-                # Store plain serializable dict in Document.extracted_fields
                 doc.extracted_fields = {
                     fn: {
                         "value": ef.value,
                         "confidence": ef.confidence,
                         "evidence": ef.evidence,
                         "source": ef.source_document,
+                        "page_number": ef.page_number,
+                        "extraction_method": ef.extraction_method,
+                        "validation_status": ef.validation_status,
+                        "masked_value": ef.masked_value,
                     }
                     for fn, ef in fields.items()
                 }
                 doc.status = "processed"
             except Exception as exc:
-                logger.error(f"Error processing document {doc.document_id}: {exc}")
+                logger.error(
+                    "Error processing document %s: %s",
+                    mask_identifier(doc.document_id),
+                    exc,
+                )
                 doc.status = "failed"
 
             processed_docs.append(doc)
