@@ -46,6 +46,7 @@ from app.ui.services import (
 from app.ui.state import (
     STATE_SELECTED_APP_ID,
     STATE_SELECTED_RUN_ID,
+    get_authenticated_ui_user,
     navigate_to,
     queue_existing_applicant_for_intake,
     store_live_result,
@@ -101,7 +102,15 @@ def render_dashboard_overview() -> None:
             "No underwriting runs are persisted in SQLite yet. Submit a new application in **New Application**, "
             "or optionally run baseline evaluations across synthetic test packages below."
         )
-        if st.button(
+        auth_user = get_authenticated_ui_user()
+        can_seed = True
+        if auth_user is not None:
+            from app.auth.permissions import Permission, check_permission
+
+            can_seed = check_permission(
+                auth_user.role, Permission.UNDERWRITING_INITIATE
+            )
+        if can_seed and st.button(
             "Run Sample Baseline Cohort Evaluations (APP0001–APP0010)",
             key="dash_seed_sample",
         ):
@@ -119,6 +128,15 @@ def render_dashboard_overview() -> None:
                                 aid
                             ),
                             allow_duplicate=True,
+                            submitted_by_user_id=(
+                                auth_user.user_id if auth_user else None
+                            ),
+                            submitted_by_username=(
+                                auth_user.username if auth_user else None
+                            ),
+                            submitted_by_role=(
+                                auth_user.role.value if auth_user else None
+                            ),
                         )
                         store_live_result(aid, out)
             st.rerun()

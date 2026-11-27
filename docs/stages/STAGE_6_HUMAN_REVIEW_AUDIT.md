@@ -16,17 +16,17 @@
 
 Stage 6 introduces a dedicated backend human-review service layer, Pydantic review data contracts, an append-only SQLite review table, an 8th Streamlit navigation screen (`Underwriter Review Queue`), and cross-page status separation:
 
-- **Schemas** ([`app/schemas/review.py`](app/schemas/review.py), exported via [`app/schemas/__init__.py`](app/schemas/__init__.py)):
+- **Schemas** ([`app/schemas/review.py`](../../app/schemas/review.py), exported via [`app/schemas/__init__.py`](../../app/schemas/__init__.py)):
   - `ReviewStatus` (`PENDING`, `IN_REVIEW`, `APPROVED`, `REJECTED`, `ADDITIONAL_INFO_REQUESTED`, `INVESTIGATION_REQUIRED`)
   - `HumanReviewAction` (`START_REVIEW`, `APPROVE`, `REJECT`, `REQUEST_ADDITIONAL_INFO`, `RETURN_FOR_INVESTIGATION`, `RETURN_TO_PENDING`)
   - `HumanReviewSubmission`, `HumanReviewEvent`, `ACTION_TO_TARGET_STATUS`, `ALLOWED_REVIEW_TRANSITIONS`, `CORRECTION_ALLOWED_TARGETS`
-- **Database Layer** ([`app/database/reviews.py`](app/database/reviews.py), initialized in [`app/database/db.py`](app/database/db.py)):
+- **Database Layer** ([`app/database/reviews.py`](../../app/database/reviews.py), initialized in [`app/database/db.py`](../../app/database/db.py)):
   - Append-only `human_review_events` table with idempotent `ALTER TABLE` column checks and query/index helpers (`init_reviews_table`, `insert_human_review_event`, `get_latest_review_for_run`, `get_review_history_for_run`, `get_human_review_events`, etc.).
-- **Server-Side Review Service** ([`app/review/service.py`](app/review/service.py)):
+- **Server-Side Review Service** ([`app/review/service.py`](../../app/review/service.py)):
   - Validates inputs, lengths, conditional requirements, confirmation flags, source run existence, explicit status transitions, duplicate submission hashes, privacy masking, and fail-safe DB transactions (`submit_human_review`, `submit_human_review_safe`, `record_additional_info_return`, `list_review_queue`, `compute_review_queue_metrics`, `get_case_review_summary`).
 - **Streamlit Workbench & Views**:
-  - New [`app/ui/views_review.py`](app/ui/views_review.py) implementing **Underwriter Review Queue**.
-  - Updated [`app/ui/components.py`](app/ui/components.py), [`app/ui/dashboard.py`](app/ui/dashboard.py), [`app/ui/state.py`](app/ui/state.py), [`app/ui/views_results.py`](app/ui/views_results.py), [`app/ui/views_portfolio.py`](app/ui/views_portfolio.py), and [`app/ui/views_intake.py`](app/ui/views_intake.py) to separate AI Recommendation, Pipeline Execution Status, Human Review Status, and Final Human Decision consistently.
+  - New [`app/ui/views_review.py`](../../app/ui/views_review.py) implementing **Underwriter Review Queue**.
+  - Updated [`app/ui/components.py`](../../app/ui/components.py), [`app/ui/dashboard.py`](../../app/ui/dashboard.py), [`app/ui/state.py`](../../app/ui/state.py), [`app/ui/views_results.py`](../../app/ui/views_results.py), [`app/ui/views_portfolio.py`](../../app/ui/views_portfolio.py), and [`app/ui/views_intake.py`](../../app/ui/views_intake.py) to separate AI Recommendation, Pipeline Execution Status, Human Review Status, and Final Human Decision consistently.
 
 ---
 
@@ -48,7 +48,7 @@ The **Underwriter Review Queue** (`app/ui/views_review.py`) displays deduplicate
 
 ## 3. Database Schema & Migrations (`human_review_events`)
 
-Created and migrated idempotently via `init_reviews_table()` in [`app/database/reviews.py`](app/database/reviews.py):
+Created and migrated idempotently via `init_reviews_table()` in [`app/database/reviews.py`](../../app/database/reviews.py):
 
 | Column | Type | Purpose |
 | :--- | :--- | :--- |
@@ -94,10 +94,10 @@ Indexes: `idx_reviews_app_ts (application_id, review_timestamp DESC)`, `idx_revi
 ## 5. Audit Implementation & Privacy / Security Safeguards
 
 - **Append-Only Persistence**: No `UPDATE` or `DELETE` SQL statement exists on `human_review_events` or `underwriting_runs`.
-- **Audit History Inspection**: `render_audit_history_view()` and `render_audit_run_inspection()` ([`app/ui/views_portfolio.py`](app/ui/views_portfolio.py)) allow filtering AI runs (`UNDERWRITING_RUN`), Human Review Events (`HUMAN_REVIEW_EVENT`), reviewer IDs, transitions, comments, and linked corrections in read-only mode.
+- **Audit History Inspection**: `render_audit_history_view()` and `render_audit_run_inspection()` ([`app/ui/views_portfolio.py`](../../app/ui/views_portfolio.py)) allow filtering AI runs (`UNDERWRITING_RUN`), Human Review Events (`HUMAN_REVIEW_EVENT`), reviewer IDs, transitions, comments, and linked corrections in read-only mode.
 - **Privacy & Integrity Safeguards**:
   - Server-side validation rejects missing `reviewer_id`, missing `decision_reason`, missing conditional info/investigation fields, unconfirmed submissions, non-existent `source_run_id`, and over-limit strings.
-  - Comments, reasons, and notes pass through control-character sanitization and `mask_sensitive_text(...)` from [`app/document_processing/security.py`](app/document_processing/security.py).
+  - Comments, reasons, and notes pass through control-character sanitization and `mask_sensitive_text(...)` from [`app/document_processing/security.py`](../../app/document_processing/security.py).
   - Duplicate SHA-256 `submission_hash` detection blocks duplicate saves caused by Streamlit reruns.
   - `submit_human_review_safe()` isolates SQLite transaction errors and never reports saved success if persistence fails.
 
@@ -113,7 +113,7 @@ Indexes: `idx_reviews_app_ts (application_id, review_timestamp DESC)`, `idx_revi
 
 ## 7. Automated Tests (`tests/test_human_review.py`)
 
-Verified via [`tests/test_human_review.py`](tests/test_human_review.py) against isolated `tmp_path` SQLite databases:
+Verified via [`tests/test_human_review.py`](../../tests/test_human_review.py) against isolated `tmp_path` SQLite databases:
 - `test_review_queue_filtering_and_failed_run_exclusion`
 - `test_human_review_actions_and_immutable_ai_preservation`
 - `test_validation_rejects_missing_and_invalid_inputs`

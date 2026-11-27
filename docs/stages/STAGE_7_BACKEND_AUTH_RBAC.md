@@ -10,11 +10,11 @@
 
 Stage 7 introduces a FastAPI service layer, Argon2id/JWT authentication, Role-Based Access Control (RBAC), Maker-Checker enforcement, SQLAlchemy/Alembic database migration foundations for PostgreSQL readiness, optional Streamlit session authentication, and pluggable external integration interfaces while preserving all Stage 1–6 multi-agent underwriting and append-only audit invariants:
 
-- **FastAPI Backend Layer** ([`app/api/main.py`](app/api/main.py)): Versioned `/api/v1` REST API delegating strictly to existing orchestration, review, application, and audit services without duplicating business logic.
-- **Authentication & Cryptography** ([`app/auth/`](app/auth/)): Argon2id password hashing ([`app/auth/security.py`](app/auth/security.py)), short-lived HS256 JWT access tokens with unique `jti` claims, rotating/revocable hashed refresh tokens, account lockout, and sliding-window login rate limiting ([`app/auth/service.py`](app/auth/service.py)).
-- **RBAC & Maker-Checker** ([`app/auth/permissions.py`](app/auth/permissions.py)): Backend permission matrix (`Permission`, `ROLE_PERMISSIONS`) enforced via `require_permission` / `require_any_permission` ([`app/api/dependencies.py`](app/api/dependencies.py)) plus server-side Maker-Checker checks (`enforce_not_self_review`, `enforce_correction_requires_supervisor`).
-- **Database & Migrations** ([`app/database/engine.py`](app/database/engine.py), [`app/database/schema.py`](app/database/schema.py), [`alembic/`](alembic/)): Shared SQLAlchemy engine with PostgreSQL connection pooling options, explicit foreign keys/indexes/unique constraints, optimistic concurrency protection on human reviews, Alembic migration scripts, and a non-destructive data copy utility ([`app/database/migration.py`](app/database/migration.py), [`scripts/migrate_sqlite_to_postgres.py`](scripts/migrate_sqlite_to_postgres.py)).
-- **External Integration Foundations** ([`app/integrations/`](app/integrations/)): Protocol/ABC adapters for credit bureau, KYC verification, LLM reasoning, and audit webhooks with sandboxed local defaults (`IntegrationRegistry`).
+- **FastAPI Backend Layer** ([`app/api/main.py`](../../app/api/main.py)): Versioned `/api/v1` REST API delegating strictly to existing orchestration, review, application, and audit services without duplicating business logic.
+- **Authentication & Cryptography** ([`app/auth/`](../../app/auth/)): Argon2id password hashing ([`app/auth/security.py`](../../app/auth/security.py)), short-lived HS256 JWT access tokens with unique `jti` claims, rotating/revocable hashed refresh tokens, account lockout, and sliding-window login rate limiting ([`app/auth/service.py`](../../app/auth/service.py)).
+- **RBAC & Maker-Checker** ([`app/auth/permissions.py`](../../app/auth/permissions.py)): Backend permission matrix (`Permission`, `ROLE_PERMISSIONS`) enforced via `require_permission` / `require_any_permission` ([`app/api/dependencies.py`](../../app/api/dependencies.py)) plus server-side Maker-Checker checks (`enforce_not_self_review`, `enforce_correction_requires_supervisor`).
+- **Database & Migrations** ([`app/database/engine.py`](../../app/database/engine.py), [`app/database/schema.py`](../../app/database/schema.py), [`alembic/`](../../alembic/)): Shared SQLAlchemy engine with PostgreSQL connection pooling options, explicit foreign keys/indexes/unique constraints, optimistic concurrency protection on human reviews, Alembic migration scripts, and a non-destructive data copy utility ([`app/database/migration.py`](../../app/database/migration.py), [`scripts/migrate_sqlite_to_postgres.py`](../../scripts/migrate_sqlite_to_postgres.py)).
+- **External Integration Foundations** ([`app/integrations/`](../../app/integrations/)): Protocol/ABC adapters for credit bureau, KYC verification, LLM reasoning, and audit webhooks with sandboxed local defaults (`IntegrationRegistry`).
 
 ---
 
@@ -78,16 +78,16 @@ Stage 7 introduces a FastAPI service layer, Argon2id/JWT authentication, Role-Ba
 
 ## 4. Database Architecture, Concurrency & Migration Strategy
 
-- **SQLite + PostgreSQL Engine Abstraction** ([`app/database/engine.py`](app/database/engine.py)): Uses `DATABASE_URL` via `config/settings.py`. SQLite enables `check_same_thread=False` and `PRAGMA foreign_keys=ON`; PostgreSQL URLs configure `pool_size`, `max_overflow`, `pool_timeout`, `pool_pre_ping=True`, and `pool_recycle=1800`. *(PostgreSQL runtime requires installing a PostgreSQL DBAPI driver such as `psycopg2-binary` or `psycopg`; local testing verified SQLite execution.)*
-- **Explicit FKs, Unique Constraints & Indexes** ([`app/auth/models.py`](app/auth/models.py), [`app/database/schema.py`](app/database/schema.py)):
+- **SQLite + PostgreSQL Engine Abstraction** ([`app/database/engine.py`](../../app/database/engine.py)): Uses `DATABASE_URL` via `config/settings.py`. SQLite enables `check_same_thread=False` and `PRAGMA foreign_keys=ON`; PostgreSQL URLs configure `pool_size`, `max_overflow`, `pool_timeout`, `pool_pre_ping=True`, and `pool_recycle=1800`. *(PostgreSQL runtime requires installing a PostgreSQL DBAPI driver such as `psycopg2-binary` or `psycopg`; local testing verified SQLite execution.)*
+- **Explicit FKs, Unique Constraints & Indexes** ([`app/auth/models.py`](../../app/auth/models.py), [`app/database/schema.py`](../../app/database/schema.py)):
   - `refresh_tokens.user_id -> users.user_id` (`ON DELETE CASCADE`), `users.username` & `users.email` unique, `refresh_tokens.token_hash` unique.
   - `human_review_events.source_run_id -> underwriting_runs.run_id` (`ON DELETE RESTRICT`), `human_review_events.submission_hash` unique.
 - **Optimistic Concurrency & Safe Concurrent Review Writes**:
   - API submissions and Streamlit UI pass `expected_previous_status`, returning `409 Conflict` if review status changed concurrently.
-  - [`insert_human_review_event()`](app/database/reviews.py) acquires a SQLite `BEGIN IMMEDIATE` write lock and re-verifies inside the transaction that the latest `new_review_status` still equals `previous_review_status`, raising `ConcurrentReviewConflictError` if another writer committed first.
+  - [`insert_human_review_event()`](../../app/database/reviews.py) acquires a SQLite `BEGIN IMMEDIATE` write lock and re-verifies inside the transaction that the latest `new_review_status` still equals `previous_review_status`, raising `ConcurrentReviewConflictError` if another writer committed first.
 - **Non-Destructive Alembic & Data Migration**:
-  - [`alembic/versions/0001_stage7_initial_schema.py`](alembic/versions/0001_stage7_initial_schema.py) creates new auth tables idempotently and inspects existing tables to apply additive nullable attribution columns without altering or discarding historical underwriting runs or human reviews.
-  - [`scripts/migrate_sqlite_to_postgres.py`](scripts/migrate_sqlite_to_postgres.py) / [`migrate_database_data()`](app/database/migration.py) reads source SQLite tables safely (handling pre-Stage-7 schemas via table reflection) and inserts missing primary keys into the target DB in FK order without mutating the source DB.
+  - [`alembic/versions/0001_stage7_initial_schema.py`](../../alembic/versions/0001_stage7_initial_schema.py) creates new auth tables idempotently and inspects existing tables to apply additive nullable attribution columns without altering or discarding historical underwriting runs or human reviews.
+  - [`scripts/migrate_sqlite_to_postgres.py`](../../scripts/migrate_sqlite_to_postgres.py) / [`migrate_database_data()`](../../app/database/migration.py) reads source SQLite tables safely (handling pre-Stage-7 schemas via table reflection) and inserts missing primary keys into the target DB in FK order without mutating the source DB.
 
 ---
 

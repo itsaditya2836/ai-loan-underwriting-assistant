@@ -14,16 +14,16 @@
 
 ## 1. Application Entry Point
 
-- **Primary Entry Point**: [`app/main.py`](app/main.py)
-  - Detects `st.runtime.exists()` when launched via `.venv/bin/streamlit run app/main.py` -> calls `configure_page()` once and renders `render_dashboard()` from [`app/ui/dashboard.py`](app/ui/dashboard.py).
+- **Primary Entry Point**: [`app/main.py`](../../app/main.py)
+  - Detects `st.runtime.exists()` when launched via `.venv/bin/streamlit run app/main.py` -> calls `configure_page()` once and renders `render_dashboard()` from [`app/ui/dashboard.py`](../../app/ui/dashboard.py).
   - Supports CLI verification (`DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/python app/main.py`) via `run_cli_verification()` which initializes configuration, logging, `submitted_applications`, and `underwriting_runs` tables cleanly without touching `st.set_page_config`.
-- **Legacy Note**: `frontend/streamlit_app.py` is an obsolete Stage 1 static shell and is superseded by [`app/ui/dashboard.py`](app/ui/dashboard.py).
+- **Legacy Note**: `frontend/streamlit_app.py` is an obsolete Stage 1 static shell and is superseded by [`app/ui/dashboard.py`](../../app/ui/dashboard.py).
 
 ---
 
 ## 2. Navigation & Modular UI Architecture
 
-The sidebar (`sidebar_nav_radio` + `sidebar_app_selector` with pending-state transition queuing in [`app/ui/state.py`](app/ui/state.py)) coordinates seven Stage 5 screens (extended in Stage 6 with `Underwriter Review Queue` — see [`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)):
+The sidebar (`sidebar_nav_radio` + `sidebar_app_selector` with pending-state transition queuing in [`app/ui/state.py`](../../app/ui/state.py)) coordinates seven Stage 5 screens (extended in Stage 6 with `Underwriter Review Queue` — see [`docs/stages/STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)):
 
 | Page | Module | Responsibility |
 | :--- | :--- | :--- |
@@ -36,15 +36,15 @@ The sidebar (`sidebar_nav_radio` + `sidebar_app_selector` with pending-state tra
 | **Audit History** | `app/ui/views_portfolio.py` | Immutable read-only SQLite ledger (`underwriting_runs`) with filtering and individual masked run snapshot inspection |
 
 Supporting UI service modules:
-- [`app/ui/services.py`](app/ui/services.py): Pure Python backend adapter (`validate_applicant_form_input`, `validate_uploaded_pdf`, `preview_uploaded_documents`, `submit_application_and_underwrite`, `compute_dashboard_metrics`).
-- [`app/ui/components.py`](app/ui/components.py): Styling, INR formatting, HITL banner, safe null/unavailable formatters (`format_risk_score_display`, `format_fraud_status_display`), and factor/conflict cards.
-- [`app/database/applications.py`](app/database/applications.py): Persisted `submitted_applications` table in SQLite.
+- [`app/ui/services.py`](../../app/ui/services.py): Pure Python backend adapter (`validate_applicant_form_input`, `validate_uploaded_pdf`, `preview_uploaded_documents`, `submit_application_and_underwrite`, `compute_dashboard_metrics`).
+- [`app/ui/components.py`](../../app/ui/components.py): Styling, INR formatting, HITL banner, safe null/unavailable formatters (`format_risk_score_display`, `format_fraud_status_display`), and factor/conflict cards.
+- [`app/database/applications.py`](../../app/database/applications.py): Persisted `submitted_applications` table in SQLite.
 
 ---
 
 ## 3. Applicant Intake Workflow
 
-Implemented in [`app/ui/views_intake.py`](app/ui/views_intake.py) and `validate_applicant_form_input()` ([`app/ui/services.py`](app/ui/services.py)):
+Implemented in [`app/ui/views_intake.py`](../../app/ui/views_intake.py) and `validate_applicant_form_input()` ([`app/ui/services.py`](../../app/ui/services.py)):
 - Collects **strictly the authoritative `Applicant` fields** (`applicant_id`, `name`, `age`, `employment_type`, `employment_years`, `monthly_income`, `existing_emi`, `bank_balance`, `loan_amount`, `loan_tenure`, `credit_score`, optional `monthly_expenses`, optional `number_of_dependents`) — zero unsupported filler fields.
 - Preserves valid numeric zeroes (`0` / `0.0`) explicitly (e.g., `existing_emi=0.0`, `bank_balance=0.0`, `monthly_expenses=0.0`, `number_of_dependents=0`) while leaving blank optional fields as `None`.
 - Generates collision-free unique references (`APP-YYYYMMDD-XXXX`) via `generate_applicant_reference()`.
@@ -54,7 +54,7 @@ Implemented in [`app/ui/views_intake.py`](app/ui/views_intake.py) and `validate_
 
 ## 4. Document Upload Workflow
 
-Implemented in [`app/ui/views_intake.py`](app/ui/views_intake.py) and `validate_uploaded_pdf()` / `temporary_upload_directory()` ([`app/ui/services.py`](app/ui/services.py)):
+Implemented in [`app/ui/views_intake.py`](../../app/ui/views_intake.py) and `validate_uploaded_pdf()` / `temporary_upload_directory()` ([`app/ui/services.py`](../../app/ui/services.py)):
 - Supports canonical Stage 3 document categories: `auto`, `loan_application`, `identity_proof`, `address_proof`, `salary_slip`, `bank_statement`, `income_statement`, and `employment_proof`.
 - Validates every uploaded file before staging:
   - Extension must be `.pdf`
@@ -69,7 +69,7 @@ Implemented in [`app/ui/views_intake.py`](app/ui/views_intake.py) and `validate_
 
 ## 5. Underwriting Submission Workflow
 
-Handled by `submit_application_and_underwrite()` ([`app/ui/services.py`](app/ui/services.py)):
+Handled by `submit_application_and_underwrite()` ([`app/ui/services.py`](../../app/ui/services.py)):
 1. Re-validates applicant inputs and ensures zero invalid staged files remain.
 2. Computes a canonical SHA-256 submission fingerprint (`compute_submission_fingerprint`); blocks accidental identical resubmission unless the user explicitly enables intentional re-submission.
 3. Delegates execution to `UnderwritingOrchestrator.run_pipeline(applicant, package_dir=...)` -> `DecisionReasoningAgent().evaluate(analysis)` -> `save_underwriting_run_safe(...)`.
@@ -81,22 +81,22 @@ Handled by `submit_application_and_underwrite()` ([`app/ui/services.py`](app/ui/
 
 ## 6. Underwriting Results & Document Review
 
-- **Results Display** ([`app/ui/views_results.py`](app/ui/views_results.py)):
+- **Results Display** ([`app/ui/views_results.py`](../../app/ui/views_results.py)):
   - Displays mapped categorical recommendation (`APPROVED (APPROVE)`, `REJECTED (REJECT)`, `MANUAL_REVIEW`) plus applicant summary, Stage 4 eligibility status/rules/DTI, ML risk tier/score/model availability, fraud severity/anomalies, document verification status/missing/unclassified/invalid/ambiguous/conflicting fields, consistency conflicts, decision/review reasons, and agent statuses.
   - **Honest Unavailable Representation**: Missing or invalid risk scores render as `Unavailable` (never `0.0`); unavailable fraud assessments render as `UNAVAILABLE (Inspection Required)` (never `NONE` or clean).
-- **Document Review** ([`app/ui/views_results.py`](app/ui/views_results.py)):
+- **Document Review** ([`app/ui/views_results.py`](../../app/ui/views_results.py)):
   - Shows per-document classification, confidence (explicitly documented as heuristic, not calibrated probability), OCR mode, page counts, missing expected fields, invalid/ambiguous/conflicting fields, and masked extracted values/evidence (`mask_extracted_value` using Stage 3 masking utilities).
 
 ---
 
 ## 7. Application History & Audit History
 
-- **Applications & Application Details** ([`app/ui/views_portfolio.py`](app/ui/views_portfolio.py)):
+- **Applications & Application Details** ([`app/ui/views_portfolio.py`](../../app/ui/views_portfolio.py)):
   - Displays unique applicant rows paired with run counts and latest run state, searchable by ID/name, source (`submitted` vs `synthetic`), latest decision, pipeline status, and date range (`ORDER BY` / grouped without join duplication).
   - Application Details displays full chronological run history per applicant.
-- **Audit History** ([`app/ui/views_portfolio.py`](app/ui/views_portfolio.py)):
+- **Audit History** ([`app/ui/views_portfolio.py`](../../app/ui/views_portfolio.py)):
   - Queries SQLite `underwriting_runs` (including additive `details_snapshot_json` storing masked Stage 3–8 evidence) and Stage 6 append-only `human_review_events` with filters for applicant ref, recommendation, pipeline status, risk category, anomaly severity, and reviewer ID.
-  - Strictly read-only (no edit or delete actions). Human underwriter review, follow-up queues, and linked corrections are implemented in Stage 6 ([`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)).
+  - Strictly read-only (no edit or delete actions). Human underwriter review, follow-up queues, and linked corrections are implemented in Stage 6 ([`docs/stages/STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)).
 
 ---
 

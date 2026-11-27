@@ -34,15 +34,16 @@ def _get_sqlite_path_from_url(database_url: str) -> str:
 def get_database_connection() -> Generator[sqlite3.Connection, None, None]:
     """Context manager providing a managed SQLite connection.
 
-    Yields:
-        sqlite3.Connection: Database connection with sqlite3.Row row_factory enabled.
-
-    Example:
-        with get_database_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
+    Fails fast if configured with a non-SQLite DATABASE_URL rather than
+    misinterpreting PostgreSQL URIs as filesystem paths.
     """
     settings = get_settings()
+    if not settings.database_url.startswith("sqlite"):
+        raise RuntimeError(
+            "SQLite connection manager invoked while DATABASE_URL targets a non-SQLite backend "
+            f"('{settings.database_url.split('://', 1)[0]}'). Historical underwriting/review "
+            "SQLite helpers require SQLite or SQLAlchemy dialect migration before runtime cutover."
+        )
     db_path = _get_sqlite_path_from_url(settings.database_url)
 
     # Ensure parent directory exists if a path is present
@@ -50,9 +51,11 @@ def get_database_connection() -> Generator[sqlite3.Connection, None, None]:
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
         yield conn
         conn.commit()
     except Exception as exc:

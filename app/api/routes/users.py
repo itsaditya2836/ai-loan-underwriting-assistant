@@ -55,10 +55,18 @@ async def get_user(
 async def update_user(
     user_id: str,
     body: UserUpdate,
-    _user: User = Depends(require_permission(Permission.USER_UPDATE)),
+    current_user: User = Depends(require_permission(Permission.USER_UPDATE)),
     auth: AuthService = Depends(get_auth_service),
 ) -> UserPublic:
-    """Update a user (Admin only)."""
+    """Update a user (Admin only; blocks self-deactivation or self-role-demotion)."""
+    if user_id == current_user.user_id:
+        if body.is_active is False or (
+            body.role is not None and body.role != current_user.role
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Administrators cannot deactivate or change their own role.",
+            )
     result = auth.update_user(user_id, body)
     if result is None:
         raise HTTPException(

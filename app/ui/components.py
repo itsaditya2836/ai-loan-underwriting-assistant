@@ -261,7 +261,13 @@ def render_human_vs_ai_summary_panel(case_summary: Dict[str, Any]) -> None:
         delta=reviewer_note,
         delta_color="off",
     )
-    st.caption(
-        "Reviewer attribution records user-supplied Reviewer IDs for workflow traceability; "
-        "local authentication and RBAC are scheduled for Stage 7."
-    )
+    if latest_rev and latest_rev.get("reviewer_user_id"):
+        st.caption(
+            f"Verified Reviewer Identity: `{latest_rev.get('reviewer_username') or latest_rev['reviewer_id']}` "
+            f"(User ID: `{latest_rev['reviewer_user_id']}`, Role: `{latest_rev.get('reviewer_role') or 'N/A'}`)."
+        )
+    else:
+        st.caption(
+            "Unauthenticated prototype attribution displayed for local workflow traceability; "
+            "sign in via sidebar or use the FastAPI `/api/v1` backend for verified JWT/RBAC attribution."
+        )

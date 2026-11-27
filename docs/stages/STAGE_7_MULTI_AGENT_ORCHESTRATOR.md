@@ -166,7 +166,7 @@ For each agent and the pipeline as a whole, the orchestrator records:
 
 ## 8. Synthetic Cohort Evaluation (N=30 Document Packages)
 
-Evaluated via [`scripts/evaluate_orchestrator.py`](file:///Users/aditya/Desktop/Stuff/Mini%20Project/scripts/evaluate_orchestrator.py):
+Evaluated via [`scripts/evaluate_orchestrator.py`](../../scripts/evaluate_orchestrator.py):
 
 ### Benchmark Summary
 

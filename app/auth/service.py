@@ -2,10 +2,11 @@
 
 Handles:
 - User CRUD against SQLAlchemy tables (users, refresh_tokens, login_attempts).
-- Login with Argon2id verification + JWT token pair issuance.
-- Refresh token rotation and revocation.
-- Brute-force rate limiting via login_attempts table.
-- Database initialization (creates auth tables if missing).
+- Login with Argon2id constant-time verification + JWT token pair issuance.
+- Refresh token rotation, expiration validation, and reuse detection.
+- Logout revocation bumping per-user token_version (invalidates active access tokens too).
+- Brute-force sliding-window rate limiting (per-username + per-IP) and account lockout.
+- Idempotent auth table initialization and safe non-production default admin seeding.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.engine import Engine
 
 from app.auth.models import (
@@ -30,6 +31,7 @@ from app.auth.models import (
     users_table,
 )
 from app.auth.security import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     create_refresh_token,
     hash_password,
@@ -64,10 +66,32 @@ def reset_engine() -> None:
     _shared_reset_engine()
 
 
+def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize naive datetimes (e.g., from SQLite) to UTC-aware datetimes."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def init_auth_tables(engine: Optional[Engine] = None) -> None:
-    """Create auth tables (users, refresh_tokens, login_attempts) if they don't exist."""
+    """Create auth tables and apply non-destructive additive auth columns if missing."""
     eng = engine or _get_engine()
     auth_metadata.create_all(eng, checkfirst=True)
+
+    # Additive Stage 8 column migration for pre-existing Stage 7 auth DBs
+    inspector = inspect(eng)
+    if "users" in inspector.get_table_names():
+        existing_cols = {c["name"] for c in inspector.get_columns("users")}
+        if "token_version" not in existing_cols:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+
     logger.info("Auth tables initialized successfully.")
 
 
@@ -92,7 +116,6 @@ class AuthService:
         pw_hash = hash_password(data.password)
 
         with self.engine.begin() as conn:
-            # Check uniqueness
             existing = conn.execute(
                 select(users_table.c.user_id).where(
                     (users_table.c.username == data.username)
@@ -100,9 +123,7 @@ class AuthService:
                 )
             ).fetchone()
             if existing:
-                raise ValueError(
-                    f"A user with username '{data.username}' or email '{data.email}' already exists."
-                )
+                raise ValueError("A user with that username or email already exists.")
 
             conn.execute(
                 users_table.insert().values(
@@ -115,6 +136,7 @@ class AuthService:
                     is_active=True,
                     is_locked=False,
                     failed_login_count=0,
+                    token_version=0,
                     created_at=now,
                     updated_at=now,
                 )
@@ -159,20 +181,34 @@ class AuthService:
         return [self._row_to_user(r).to_public() for r in rows]
 
     def update_user(self, user_id: str, data: UserUpdate) -> Optional[UserPublic]:
-        """Update user fields (admin operation)."""
+        """Update user fields (admin operation); revokes tokens on role change or deactivation."""
+        existing_user = self.get_user_by_id(user_id)
+        if existing_user is None:
+            return None
+
         updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc)}
+        revoke_tokens = False
+
         if data.full_name is not None:
             updates["full_name"] = data.full_name
         if data.email is not None:
             updates["email"] = data.email
-        if data.role is not None:
+        if data.role is not None and data.role != existing_user.role:
             updates["role"] = data.role.value
+            revoke_tokens = True
         if data.is_active is not None:
             updates["is_active"] = data.is_active
+            if not data.is_active:
+                revoke_tokens = True
         if data.is_locked is not None:
             updates["is_locked"] = data.is_locked
             if not data.is_locked:
                 updates["failed_login_count"] = 0
+            else:
+                revoke_tokens = True
+
+        if revoke_tokens:
+            updates["token_version"] = existing_user.token_version + 1
 
         with self.engine.begin() as conn:
             conn.execute(
@@ -180,10 +216,19 @@ class AuthService:
                 .where(users_table.c.user_id == user_id)
                 .values(**updates)
             )
+            if revoke_tokens:
+                conn.execute(
+                    update(refresh_tokens_table)
+                    .where(
+                        (refresh_tokens_table.c.user_id == user_id)
+                        & (refresh_tokens_table.c.revoked == False)  # noqa: E712
+                    )
+                    .values(revoked=True)
+                )
         return self.get_user_public(user_id)
 
     def deactivate_user(self, user_id: str) -> Optional[UserPublic]:
-        """Deactivate a user (soft delete)."""
+        """Deactivate a user (soft delete) and revoke active sessions."""
         return self.update_user(user_id, UserUpdate(is_active=False))
 
     # -------------------------------------------------------------------
@@ -196,16 +241,12 @@ class AuthService:
         password: str,
         ip_address: Optional[str] = None,
     ) -> TokenPair:
-        """Authenticate user and return JWT token pair.
-
-        Raises:
-            AuthenticationError: On invalid credentials, locked account, or rate limit.
-        """
+        """Authenticate user and return JWT token pair with generic error messages."""
         settings = get_settings()
+        settings.validate_production_security()
 
-        # Rate limiting check
-        if self._is_rate_limited(username):
-            # Still increment the per-user lockout counter if the user exists
+        # Rate limiting check (per-username + per-IP)
+        if self._is_rate_limited(username, ip_address=ip_address):
             user_for_lockout = self.get_user_by_username(username)
             if user_for_lockout and user_for_lockout.is_active:
                 self._increment_failed_logins(user_for_lockout.user_id)
@@ -216,18 +257,11 @@ class AuthService:
 
         user = self.get_user_by_username(username)
 
-        # Generic failure message to prevent user enumeration
-        if user is None:
+        # Constant-time guard for missing, inactive, or locked accounts (prevents enumeration)
+        if user is None or not user.is_active or user.is_locked:
+            verify_password(password, DUMMY_PASSWORD_HASH)
             self._record_login_attempt(username, ip_address, success=False)
             raise AuthenticationError("Invalid credentials.")
-
-        if not user.is_active:
-            self._record_login_attempt(username, ip_address, success=False)
-            raise AuthenticationError("Invalid credentials.")
-
-        if user.is_locked:
-            self._record_login_attempt(username, ip_address, success=False)
-            raise AuthenticationError("Account is locked. Contact an administrator.")
 
         if not verify_password(password, user.password_hash):
             self._increment_failed_logins(user.user_id)
@@ -258,17 +292,19 @@ class AuthService:
                 .values(last_login_at=datetime.now(timezone.utc))
             )
 
-        # Issue token pair
+        # Issue token pair carrying token_version
         access_token = create_access_token(
             {
                 "sub": user.user_id,
                 "username": user.username,
                 "role": user.role.value,
+                "ver": user.token_version,
             }
         )
-        refresh_tok = create_refresh_token({"sub": user.user_id})
+        refresh_tok = create_refresh_token(
+            {"sub": user.user_id, "ver": user.token_version}
+        )
 
-        # Store refresh token hash
         self._store_refresh_token(
             user.user_id,
             refresh_tok,
@@ -283,12 +319,10 @@ class AuthService:
         )
 
     def refresh(self, refresh_tok: str) -> TokenPair:
-        """Exchange a valid refresh token for a new token pair (rotation).
-
-        Raises:
-            AuthenticationError: If refresh token is invalid, expired, or revoked.
-        """
+        """Exchange a valid refresh token for a new pair with reuse detection."""
         settings = get_settings()
+        settings.validate_production_security()
+
         claims = verify_token(refresh_tok, expected_type="refresh")
         if claims is None:
             raise AuthenticationError("Invalid or expired refresh token.")
@@ -297,20 +331,38 @@ class AuthService:
         if not user_id:
             raise AuthenticationError("Invalid refresh token claims.")
 
-        # Check token hash in DB
         tok_hash = hash_token(refresh_tok)
         with self.engine.connect() as conn:
             row = conn.execute(
                 select(refresh_tokens_table).where(
-                    (refresh_tokens_table.c.token_hash == tok_hash)
-                    & (refresh_tokens_table.c.revoked == False)  # noqa: E712
+                    refresh_tokens_table.c.token_hash == tok_hash
                 )
             ).fetchone()
 
         if row is None:
             raise AuthenticationError("Refresh token not found or revoked.")
 
-        # Revoke old refresh token (rotation)
+        mapping = row._mapping
+        # Reuse detection: an already-revoked token was re-presented -> revoke full session family!
+        if bool(mapping["revoked"]):
+            logger.warning(
+                "Refresh token reuse detected for user '%s'; revoking all active sessions.",
+                user_id,
+            )
+            self.logout(str(user_id))
+            raise AuthenticationError("Refresh token not found or revoked.")
+
+        expires_at = _normalize_utc(mapping.get("expires_at"))
+        if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(refresh_tokens_table)
+                    .where(refresh_tokens_table.c.token_hash == tok_hash)
+                    .values(revoked=True)
+                )
+            raise AuthenticationError("Invalid or expired refresh token.")
+
+        # Revoke old refresh token (single-use rotation)
         with self.engine.begin() as conn:
             conn.execute(
                 update(refresh_tokens_table)
@@ -318,19 +370,25 @@ class AuthService:
                 .values(revoked=True)
             )
 
-        user = self.get_user_by_id(user_id)
-        if user is None or not user.is_active:
+        user = self.get_user_by_id(str(user_id))
+        if user is None or not user.is_active or user.is_locked:
             raise AuthenticationError("User account not found or deactivated.")
 
-        # Issue new pair
+        token_ver = int(claims.get("ver", 0))
+        if token_ver != user.token_version:
+            raise AuthenticationError("Session has been revoked.")
+
         new_access = create_access_token(
             {
                 "sub": user.user_id,
                 "username": user.username,
                 "role": user.role.value,
+                "ver": user.token_version,
             }
         )
-        new_refresh = create_refresh_token({"sub": user.user_id})
+        new_refresh = create_refresh_token(
+            {"sub": user.user_id, "ver": user.token_version}
+        )
         self._store_refresh_token(
             user.user_id,
             new_refresh,
@@ -344,7 +402,7 @@ class AuthService:
         )
 
     def logout(self, user_id: str) -> None:
-        """Revoke all refresh tokens for a user."""
+        """Revoke all refresh tokens and increment token_version to invalidate active access tokens."""
         with self.engine.begin() as conn:
             conn.execute(
                 update(refresh_tokens_table)
@@ -354,14 +412,18 @@ class AuthService:
                 )
                 .values(revoked=True)
             )
-        logger.info("All refresh tokens revoked for user '%s'.", user_id)
+            conn.execute(
+                update(users_table)
+                .where(users_table.c.user_id == user_id)
+                .values(
+                    token_version=users_table.c.token_version + 1,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+        logger.info("Revoked all active sessions/tokens for user '%s'.", user_id)
 
     def get_current_user(self, token: str) -> User:
-        """Validate access token and return the authenticated user.
-
-        Raises:
-            AuthenticationError: If token is invalid or user not found.
-        """
+        """Validate access token including token_version and return the authenticated user."""
         claims = verify_token(token, expected_type="access")
         if claims is None:
             raise AuthenticationError("Invalid or expired access token.")
@@ -370,28 +432,35 @@ class AuthService:
         if not user_id:
             raise AuthenticationError("Invalid token claims.")
 
-        user = self.get_user_by_id(user_id)
-        if user is None or not user.is_active:
+        user = self.get_user_by_id(str(user_id))
+        if user is None or not user.is_active or user.is_locked:
             raise AuthenticationError("User account not found or deactivated.")
+
+        token_ver = int(claims.get("ver", 0))
+        if token_ver != user.token_version:
+            raise AuthenticationError("Access token has been revoked.")
 
         return user
 
     # -------------------------------------------------------------------
-    # Seed Default Admin
+    # Seed Default Admin (Development / Test Only)
     # -------------------------------------------------------------------
 
     def seed_default_admin(self) -> Optional[UserPublic]:
-        """Create default admin user if no users exist (development only).
+        """Create default admin user in development/test only when no users exist."""
+        settings = get_settings()
+        if settings.is_production():
+            logger.info(
+                "Production mode detected: skipping automatic default admin seeding."
+            )
+            return None
 
-        Returns the created admin user, or None if users already exist.
-        """
         with self.engine.connect() as conn:
             count = conn.execute(select(func.count()).select_from(users_table)).scalar()
 
         if count and count > 0:
             return None
 
-        settings = get_settings()
         admin = self.create_user(
             UserCreate(
                 username="admin",
@@ -401,7 +470,7 @@ class AuthService:
                 role=Role.ADMINISTRATOR,
             )
         )
-        logger.info("Seeded default admin user (username='admin').")
+        logger.info("Seeded default development admin user (username='admin').")
         return admin
 
     # -------------------------------------------------------------------
@@ -448,15 +517,19 @@ class AuthService:
                 )
             )
 
-    def _is_rate_limited(self, username: str) -> bool:
-        """Check if login attempts exceed the configured threshold."""
+    def _is_rate_limited(
+        self,
+        username: str,
+        ip_address: Optional[str] = None,
+    ) -> bool:
+        """Check if per-username or per-IP failed login attempts exceed threshold."""
         settings = get_settings()
         window_start = datetime.now(timezone.utc) - timedelta(
             minutes=settings.login_rate_limit_window_minutes
         )
 
         with self.engine.connect() as conn:
-            count = conn.execute(
+            user_count = conn.execute(
                 select(func.count())
                 .select_from(login_attempts_table)
                 .where(
@@ -465,8 +538,24 @@ class AuthService:
                     & (login_attempts_table.c.attempted_at >= window_start)
                 )
             ).scalar()
+            if (user_count or 0) >= settings.login_rate_limit_max_attempts:
+                return True
 
-        return (count or 0) >= settings.login_rate_limit_max_attempts
+            if ip_address:
+                ip_cap = max(settings.login_rate_limit_max_attempts * 4, 20)
+                ip_count = conn.execute(
+                    select(func.count())
+                    .select_from(login_attempts_table)
+                    .where(
+                        (login_attempts_table.c.ip_address == ip_address)
+                        & (login_attempts_table.c.success == False)  # noqa: E712
+                        & (login_attempts_table.c.attempted_at >= window_start)
+                    )
+                ).scalar()
+                if (ip_count or 0) >= ip_cap:
+                    return True
+
+        return False
 
     def _increment_failed_logins(self, user_id: str) -> None:
         """Increment failed login counter and lock if threshold reached."""
@@ -480,7 +569,6 @@ class AuthService:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            # Check if should lock
             row = conn.execute(
                 select(users_table.c.failed_login_count).where(
                     users_table.c.user_id == user_id
@@ -490,7 +578,11 @@ class AuthService:
                 conn.execute(
                     update(users_table)
                     .where(users_table.c.user_id == user_id)
-                    .values(is_locked=True, updated_at=datetime.now(timezone.utc))
+                    .values(
+                        is_locked=True,
+                        token_version=users_table.c.token_version + 1,
+                        updated_at=datetime.now(timezone.utc),
+                    )
                 )
                 logger.warning(
                     "User '%s' locked after %d failed attempts.", user_id, row[0]
@@ -523,6 +615,7 @@ class AuthService:
             is_active=bool(mapping.get("is_active", True)),
             is_locked=bool(mapping.get("is_locked", False)),
             failed_login_count=int(mapping.get("failed_login_count", 0)),
+            token_version=int(mapping.get("token_version", 0)),
             last_login_at=mapping.get("last_login_at"),
             created_at=mapping.get("created_at"),
             updated_at=mapping.get("updated_at"),

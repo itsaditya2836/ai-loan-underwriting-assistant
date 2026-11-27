@@ -1,7 +1,7 @@
 """FastAPI application entry point.
 
-Creates the versioned API application with CORS, lifespan initialization,
-and all /api/v1 route registrations.
+Creates the versioned API application with production-hardened CORS, security
+response headers, startup validation, lifespan initialization, and /api/v1 routes.
 
 Launch:
     uvicorn app.api.main:app --reload --port 8000
@@ -12,7 +12,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.dependencies import get_auth_service
@@ -38,18 +38,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle."""
     setup_logging()
     settings = get_settings()
+    settings.validate_production_security()
     logger.info("Starting API server in '%s' mode.", settings.app_env)
 
-    # Initialize legacy SQLite tables (underwriting_runs, etc.)
-    init_db()
+    # Initialize legacy SQLite tables (underwriting_runs, etc.) when running on SQLite
+    if settings.database_url.startswith("sqlite"):
+        init_db()
 
-    # Initialize auth tables + seed default admin
+    # Initialize auth tables; auto-seed dev admin ONLY outside production
     auth_svc = get_auth_service()
     seeded = auth_svc.seed_default_admin()
     if seeded:
         logger.info(
-            "Default admin user seeded (username='admin'). "
-            "Change the password immediately in production."
+            "Default development admin user seeded (username='admin'). "
+            "Never deploy with default credentials."
         )
 
     yield  # Application is running
@@ -60,24 +62,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     """Factory function creating the configured FastAPI application."""
     settings = get_settings()
+    settings.validate_production_security()
+    is_dev = settings.app_env.strip().lower() == "development"
 
     application = FastAPI(
         title="AI Loan Underwriting Assistant API",
         description="Backend API for the AI Loan Underwriting Assistant with authentication, RBAC, and audit.",
         version="1.0.0",
         lifespan=lifespan,
-        docs_url="/api/docs" if settings.app_env == "development" else None,
-        redoc_url="/api/redoc" if settings.app_env == "development" else None,
+        docs_url="/api/docs" if is_dev else None,
+        redoc_url="/api/redoc" if is_dev else None,
+        openapi_url="/api/openapi.json" if is_dev else None,
     )
 
-    # CORS (permissive for development; restrict in production)
+    cors_origins = settings.get_cors_origins()
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.app_env == "development" else [],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_origins,
+        allow_credentials=bool(cors_origins) and "*" not in cors_origins,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
+
+    @application.middleware("http")
+    async def add_security_headers(request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     # Register versioned route groups
     application.include_router(

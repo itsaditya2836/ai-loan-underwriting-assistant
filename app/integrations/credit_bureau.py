@@ -39,8 +39,10 @@ class LocalSyntheticCreditBureauAdapter(CreditBureauProvider):
     def fetch_credit_report(self, applicant_id: str) -> IntegrationResult:
         return IntegrationResult(
             service_name=self.service_name,
+            status=IntegrationStatus.SANDBOX,
             success=False,
             sandboxed=True,
-            payload={"applicant_id": applicant_id},
+            timed_out=False,
+            payload={"applicant_id": applicant_id, "synthetic_sandbox": True},
             error="External credit bureau integration is in local sandbox mode.",
         )

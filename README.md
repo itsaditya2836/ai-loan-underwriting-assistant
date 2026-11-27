@@ -1,602 +1,288 @@
-# AI Loan Underwriting Assistant: A Multi-Agent Agentic AI System for Faster Loan Processing
+# AI Loan Underwriting Assistant
 
-## Project Description
+**A Modular Multi-Agent Decision-Support System with Document Intelligence, Machine-Learning Risk Scoring, Explainable Underwriting Decisions, FastAPI RBAC Backend, and Human-in-the-Loop Audit Ledger**
 
-The **AI Loan Underwriting Assistant** is a multi-agent Agentic AI decision-support prototype designed for personal and home loans. The system assists loan officers and underwriters by streamlining the intake, analysis, and verification of loan applications:
-
-- **Processing applicant documents**: Ingesting PDF files and scanned images (salary slips, bank statements, identification proofs).
-- **Extracting relevant information**: Parsing unstructured documents and performing OCR to extract key applicant attributes.
-- **Checking eligibility**: Evaluating applications against deterministic underwriting policies and debt-to-income limits.
-- **Assessing repayment risk**: Scoring default risk using rule-based metrics and machine-learning models.
-- **Detecting inconsistencies and anomalies**: Cross-verifying claims across multiple submitted documents to highlight fraud signals.
-- **Generating explainable recommendations**: Synthesizing multi-agent findings into a structured proposal (`APPROVE`, `REJECT`, or `MANUAL_REVIEW`) with clear evidence trails.
-- **Supporting human review**: Empowering loan officers with a dedicated review dashboard.
-- **Maintaining an audit record**: Recording an immutable, timestamped trail of documents, extractions, findings, and human decisions.
-
-> **Responsible AI & Human-in-the-Loop Notice:**  
-> **This prototype provides decision support and does not replace authorized human underwriting decisions.**  
-> The system acts strictly as an intelligent assistant. The human loan officer retains ultimate authority and responsibility for all loan approval or rejection decisions.
+> [!IMPORTANT]
+> **Academic & Synthetic Data Disclosure:**  
+> All datasets (`APP0001`–`APP0100`), document PDFs (`APP0001`–`APP0030`), credit profiles, and evaluation metrics in this repository are **100% synthetic**. This system is **not** trained or validated on real banking portfolios or production customer data, acts strictly as a decision-support assistant (`human_review_required = True`), and is currently classified as **`READY FOR CONTROLLED TESTING`** ([`docs/stages/STAGE_8_PRODUCTION_READINESS.md`](docs/stages/STAGE_8_PRODUCTION_READINESS.md)).
 
 ---
 
-## Architecture
+## 1. Project Overview
 
-The system coordinates specialized autonomous agents in a structured, observable workflow:
+The **AI Loan Underwriting Assistant** automates the intake, document extraction, policy eligibility verification, cross-document consistency checking, and credit-risk estimation phases of personal loan underwriting while preserving full human authority over final lending decisions.
+
+Instead of delegating approvals to a black-box language model or standalone classifier, the application coordinates five specialized agents (`DocumentIntakeAgent`, `EligibilityAgent`, `FraudAnomalyAgent`, `RiskAgent`, and `DecisionReasoningAgent`) through a fault-tolerant orchestrator backed by an append-only audit database and a role-based FastAPI + Streamlit architecture.
+
+---
+
+## 2. Problem Statement
+
+Manual loan underwriting relies on human analysts opening disparate PDFs (application forms, ID proofs, salary slips, bank statements), manually reconciling declared earnings/EMIs against bank transaction credits, computing debt-to-income ratios, and writing audit justifications. Conversely, naive automation suffers from:
+- Opaque model scores lacking verifiable policy or document provenance.
+- Silent failures when documents are scanned/image-only, corrupted, or missing.
+- Confusing missing documentation with fraudulent behavior.
+- Lack of separation between advisory AI scores and accountable human approvals/rejections, and weak access controls when multiple officers and underwriters share a system.
+
+---
+
+## 3. Objectives
+
+1. **Multi-Format Document Intelligence:** Parse digital, scanned (Tesseract OCR), and mixed multi-page PDFs with page-level provenance, security safeguards, and masked PII output.
+2. **Deterministic Eligibility & Consistency Verification:** Evaluate lending rules (`credit_score`, `DTI`, income, tenure) and detect cross-document financial anomalies (`ANOM-*`) while keeping missing documents distinct from fraud.
+3. **Leakage-Free ML Risk Assessment:** Predict credit-risk categories (`LOW`, `MEDIUM`, `HIGH`, `BORDERLINE`) and scores using a standardized 15-feature contract strictly excluding protected attributes (`gender`).
+4. **Fail-Closed Orchestration & Explainable Reasoning:** Synthesize agent outputs into `APPROVE`, `REJECT`, or `MANUAL_REVIEW` via a 7-tier deterministic precedence hierarchy that blocks automatic approval whenever evidence is incomplete, conflicting, or unavailable.
+5. **Security, RBAC & Human-in-the-Loop Governance:** Enforce Argon2id/JWT authentication, 4-role RBAC (`ADMINISTRATOR`, `LOAN_OFFICER`, `UNDERWRITER`, `SUPERVISOR`), Maker-Checker self-review prevention, and append-only AI and human review ledgers.
+
+---
+
+## 4. Key Features
+
+- **8-Page Interactive Streamlit Workbench** ([`app/main.py`](app/main.py)): `Dashboard`, `Underwriter Review Queue`, `New Application`, `Applications`, `Application Details`, `Document Review`, `Underwriting Results`, and `Audit History`.
+- **Versioned FastAPI REST Backend (`/api/v1`)** ([`app/api/main.py`](app/api/main.py)): JWT auth with rotating single-use refresh tokens and reuse detection, RBAC enforcement, path-safe PDF upload APIs, underwriting runner, Maker-Checker review submission, and audit queries.
+- **Hybrid PDF & OCR Extraction Engine** ([`app/document_processing/`](app/document_processing/)): Page-level routing between PyMuPDF native text extraction and Pillow + Tesseract OCR preprocessing (`300 DPI`), detecting duplicates and field conflicts.
+- **Explainable Decision Reasoning Engine** ([`app/decision/`](app/decision/)): Standardized machine-readable reason codes (`DEC-ELIG-*`, `DEC-DOC-*`, `DEC-ANOM-*`, `DEC-RISK-*`, `DEC-CON-*`, `DEC-APP-*`) with Positive, Negative, and Blocking safeguard factors.
+- **Immutable Audit Trail & Concurrency Control** ([`app/database/`](app/database/), [`alembic/`](alembic/)): Separate `underwriting_runs` and `human_review_events` tables protected by optimistic concurrency, SQLite `BEGIN IMMEDIATE` serialization, and database triggers preventing updates/deletes.
+
+---
+
+## 5. System Architecture
+
+Full component details and data-flow explanations appear in [`PROJECT_ARCHITECTURE.md`](PROJECT_ARCHITECTURE.md).
 
 ```text
-User
-  ↓
-Loan Application Documents
-  ↓
-Orchestrator Agent
-  ↓
- ┌────────────────────────────────────────┐
- │                                        │
- │  Document Intake Agent                 │
- │  Eligibility Agent                     │
- │  Risk Agent                            │
- │  Fraud / Anomaly Agent                 │
- │                                        │
- └───────────────────┬────────────────────┘
-                     │
-                     ↓
-        Decision & Reasoning Agent
-                     │
-                     ↓
-           Loan Officer Dashboard
-                     │
-                     ↓
-            Final Human Decision
-                     │
-                     ↓
-                Audit Record
+  Streamlit Workbench (app/main.py)         FastAPI REST API (/api/v1, app/api/main.py)
+                 │                                            │
+                 └──────────────┬─────────────────────────────┘
+                                ▼
+             Auth, Argon2id, JWT & RBAC (app/auth/)
+                                │
+          ┌─────────────────────┴─────────────────────┐
+          ▼                                           ▼
+Multi-Agent Orchestrator (app/orchestration/)   Human Review Service (app/review/)
+  ├── 1. DocumentIntakeAgent (PyMuPDF + OCR)     └── Maker-Checker + State Machine
+  ├── 2. EligibilityAgent (10 Policy Rules)                    │
+  ├── 3. FraudAnomalyAgent (Cross-Doc Checks)                  │
+  ├── 4. RiskAgent (RandomForest Pipeline)                     │
+  └── 5. DecisionReasoningAgent (7-Tier Precedence)            │
+          │                                                    │
+          └─────────────────────┬──────────────────────────────┘
+                                ▼
+       SQLite Append-Only Ledgers + Alembic Schema (app/database/)
 ```
 
 ---
 
-## Technology Stack
+## 6. Technology Stack
 
-- **Programming Language**: Python 3.11+
-- **Environment**: Python Virtual Environment (`.venv`)
-- **Frontend / Dashboard**: Streamlit (`app/ui/dashboard.py` launched via `app/main.py`) with optional session RBAC sign-in
-- **Backend / API**: Versioned FastAPI REST backend under `/api/v1` (`app/api/main.py` via `uvicorn`), Argon2id + JWT authentication & RBAC
-- **Data Processing**: Pandas, NumPy
-- **Machine Learning**: Scikit-learn
-- **Document Processing**: PyMuPDF (Fitz), Pillow
-- **OCR**: pytesseract
-- **LLM / Agents**: Deterministic local agents (pluggable `app/integrations/` adapters with sandbox/disabled local defaults)
-- **Database**: SQLite for local dev/testing; SQLAlchemy schema, connection pooling configuration & Alembic migrations prepared for PostgreSQL (`alembic/`, `app/database/`)
-- **Configuration**: python-dotenv & Pydantic BaseSettings
-- **Testing**: pytest
-- **Code Quality**: black, ruff
-- **Version Control**: Git
+- **Language & Runtime:** Python 3.11+ (verified on Python 3.14.6 in `.venv`)
+- **Presentation UI:** Streamlit (`app/main.py` -> `app/ui/dashboard.py`)
+- **Backend API & Auth:** FastAPI, Uvicorn, Starlette, Pydantic v2 (`pydantic-settings`), `argon2-cffi`, `python-jose[cryptography]` (HS256/HS384/HS512)
+- **Data & Machine Learning:** pandas, NumPy, scikit-learn (`SimpleImputer` + `RandomForestClassifier`, serialized with `joblib`)
+- **Document Processing & OCR:** PyMuPDF (`pymupdf`), Pillow, `pytesseract` (Tesseract OCR system binary), ReportLab
+- **Database & Migrations:** SQLite (`sqlite3`, triggers, `BEGIN IMMEDIATE`), SQLAlchemy Core (`sqlalchemy>=2.0`), Alembic (`alembic`) — PostgreSQL dialect/DDL configured for future runtime cutover
+- **Testing & Code Quality:** `pytest`, `httpx2`, `black`, `ruff`
 
 ---
 
-## Project Structure
+## 7. Project Directory Structure
 
 ```text
 AI-Loan-Underwriting-Assistant/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py                     # Main application entry point & startup verification
-│   ├── agents/                     # Specialized underwriting agents
-│   │   ├── __init__.py
-│   │   ├── orchestrator.py         # Multi-agent workflow coordinator
-│   │   ├── document_agent.py       # Document intake and OCR pipeline agent
-│   │   ├── eligibility_agent.py    # Policy rules and eligibility evaluation agent
-│   │   ├── risk_agent.py           # Repayment and credit risk assessment agent
-│   │   ├── fraud_agent.py          # Cross-document inconsistency and fraud agent
-│   │   └── decision_agent.py       # Synthesis and explainable decision agent
-│   ├── document_processing/        # Stage 3 PDF, OCR, validation & classification pipeline
-│   │   ├── __init__.py
-│   │   ├── document_package.py     # Hybrid package orchestrator, duplicates & conflicts
-│   │   ├── extractor.py            # Multi-signal classifier & page-aware contextual parser
-│   │   ├── ocr.py                  # Configurable local Tesseract OCR + Pillow preprocessing
-│   │   ├── pdf_reader.py           # Page-level PDF reader supporting digital, scanned & mixed PDFs
-│   │   ├── security.py             # File validation, size/page bounds, active-content scan & PII masking
-│   │   └── validation.py           # Domain field validation & heuristic confidence scoring
-│   ├── eligibility/                # Centralized underwriting eligibility engine
-│   │   ├── __init__.py
-│   │   ├── policy.py               # Configurable EligibilityPolicy thresholds
-│   │   ├── rules.py                # Deterministic rule evaluations
-│   │   └── evaluator.py            # EligibilityEvaluator and aggregation logic
-│   ├── risk/                       # Risk modeling and scoring logic
-│   │   ├── __init__.py
-│   │   ├── feature_contract.py     # Authoritative RiskFeatureContract (15 ordered features)
-│   │   ├── features.py             # Feature extraction adapter delegating to RiskFeatureContract
-│   │   ├── rules.py                # Deterministic risk & protective factor rules
-│   │   ├── scoring.py              # Baseline weighted risk scoring engine
-│   │   └── risk_model.py           # Scikit-learn Pipeline ML risk model wrapper
-│   ├── fraud/                      # Cross-document inconsistency and anomaly detection
-│   │   ├── __init__.py             # Public exports
-│   │   ├── rules.py                # Configurable rule thresholds and weights
-│   │   ├── detectors.py            # Deterministic cross-document consistency checks
-│   │   ├── scoring.py              # Composite anomaly scoring (0-100) and severity aggregation
-│   │   └── anomaly_detection.py    # Backward-compatible AnomalyDetector adapter
-│   ├── decision/                   # Deterministic decision synthesis engine (Stage 8)
-│   │   ├── __init__.py
-│   │   ├── decision_agent.py       # DecisionReasoningAgent core engine
-│   │   ├── policy.py               # Centralized DecisionPolicy and REASON_CODES
-│   │   ├── reasoning.py            # Human-readable summary synthesizer
-│   │   └── rules.py                # 7-tier rule precedence & confidence scoring
-│   ├── orchestration/              # Multi-agent underwriting pipeline coordination
-│   │   ├── __init__.py             # Public orchestrator exports
-│   │   ├── orchestrator.py         # UnderwritingOrchestrator engine
-│   │   └── errors.py               # Orchestration exception hierarchy
-│   │   └── consistency.py          # Stage 4 input/output contracts & cross-agent verifier
-│   ├── processing/                 # Backward-compatibility aliases for document_processing
-│   ├── database/                   # Database access layer
-│   │   ├── __init__.py
-│   │   ├── applications.py         # Persisted submitted_applications table (Stage 5)
-│   │   ├── audit.py                # Immutable SQLite underwriting_runs ledger & snapshots
-│   │   ├── db.py                   # SQLite connection manager & schema initializer
-│   │   └── reviews.py              # Append-only Stage 6 human_review_events ledger
-│   ├── review/                     # Stage 6 server-side human review workflow & validation
-│   │   ├── __init__.py
-│   │   └── service.py              # Lifecycle state machine, queue & safe audit submission
-│   ├── ui/                         # Active Streamlit UI package (Stages 5–6)
-│   │   ├── __init__.py
-│   │   ├── components.py           # Styling, INR/unavailable formatters & status panels
-│   │   ├── dashboard.py            # Main 8-page controller & backwards-compatible helpers
-│   │   ├── services.py             # Validated intake, PDF upload lifecycle & backend glue
-│   │   ├── state.py                # Streamlit session-state keys & rerun-safe transitions
-│   │   ├── views_intake.py         # New Application intake & PDF upload workflow
-│   │   ├── views_portfolio.py      # Dashboard, Applications, Details & Audit History
-│   │   ├── views_results.py        # Underwriting Results & Document Review views
-│   │   └── views_review.py         # Stage 6 Underwriter Review Queue & human decisions
-│   ├── schemas/                    # Pydantic data models and contracts
-│   │   ├── __init__.py
-│   │   ├── applicant.py            # Applicant, Document, and Agent result schemas
-│   │   ├── anomaly.py              # AnomalyFlag, AnomalyResult, AnomalySeverity schemas
-│   │   ├── decision.py             # DecisionOutcome, DecisionReason, DecisionReasoningResult
-│   │   ├── review.py               # ReviewStatus, HumanReviewAction, HumanReviewEvent schemas
-│   │   └── underwriting.py         # OrchestrationStatus, AgentStatus, UnderwritingAnalysisResult
-│   └── utils/                      # Shared helper utilities
-│       ├── __init__.py
-│       └── helpers.py              # Centralized logging configuration
-├── models/                         # Serialized ML model artifacts & metadata
-│   ├── risk_model.joblib           # Trained SimpleImputer + RandomForestClassifier Pipeline (80/20 split)
-│   └── risk_model_metadata.json    # Feature contract, CV/held-out metrics, split IDs & importances
+│   ├── main.py                         # Active Streamlit & CLI verification entry point
+│   ├── agents/                         # Thin agent wrappers (Document, Eligibility, Fraud, Risk, Orchestrator, Decision)
+│   ├── api/                            # FastAPI /api/v1 application, dependencies & route modules
+│   │   ├── main.py                     # API app factory, lifespan, CORS & security headers
+│   │   ├── dependencies.py             # Token extraction, RBAC checks, path-safe ID validation
+│   │   └── routes/                     # auth, users, applicants, documents, underwriting, reviews, audit, integrations
+│   ├── auth/                           # Argon2id hashing, JWT lifecycle, RBAC matrix & AuthService
+│   ├── database/                       # SQLite persistence, SQLAlchemy Core schema, pooling & migration utilities
+│   ├── decision/                       # 7-tier DecisionReasoningAgent policy, rules & narrative synthesis
+│   ├── document_processing/            # Stage 3 PDF reader, Tesseract OCR, classifier, validation & security
+│   ├── eligibility/                    # Centralized EligibilityPolicy & deterministic rule evaluations
+│   ├── fraud/                          # Cross-document consistency checks & bounded anomaly scoring
+│   ├── integrations/                   # Pluggable sandbox/disabled provider interfaces (bureau, KYC, LLM, webhooks)
+│   ├── orchestration/                  # Dependency-ordered pipeline coordinator & consistency verifier
+│   ├── review/                         # Server-side human review state machine & Maker-Checker submission service
+│   ├── risk/                           # 15-feature RiskFeatureContract, baseline scorer & ML risk wrapper
+│   ├── schemas/                        # Pydantic v2 domain models & API/audit contracts
+│   ├── ui/                             # Active 8-page Streamlit workbench & session state management
+│   └── utils/                          # Centralized logging helpers
+├── alembic/                            # Database migration environment & versioned scripts (0001, 0002)
+├── config/settings.py                  # Pydantic BaseSettings & production security fail-closed validator
 ├── data/
-│   ├── applicants/                 # Placeholder directory (.gitkeep)
-│   ├── documents/                  # Raw input PDFs and scanned images (APP0001-APP0030)
-│   ├── synthetic_data/             # Generated synthetic loan datasets
-│   └── processed/                  # Placeholder directory (.gitkeep)
-├── scripts/                        # Dataset generation, training & evaluation scripts
-├── tests/                          # Automated unit and integration test suite
-│   ├── __init__.py
-│   ├── test_dashboard_audit.py     # Stage 9 dashboard helpers & isolated audit DB tests
-│   ├── test_decision_agent.py      # Stage 8 decision synthesis tests
-│   ├── test_document_agent.py      # DocumentIntakeAgent tests
-│   ├── test_document_generation.py # Synthetic PDF & manifest tests
-│   ├── test_document_package.py    # DocumentPackageProcessor tests
-│   ├── test_document_processing.py # Document processing foundation tests
-│   ├── test_eligibility.py         # Eligibility agent and schema tests
-│   ├── test_extractor.py           # Field extractor and classifier tests
-│   ├── test_fraud.py               # Fraud, decision, config, and db tests
-│   ├── test_human_review.py        # Stage 6 human review lifecycle, queue & audit tests
-│   ├── test_ocr.py                 # Local Tesseract OCR tests
-│   ├── test_orchestrator.py        # Stage 7 orchestrator & fallback regression tests
-│   ├── test_pdf_reader.py          # PyMuPDF PDF reader tests
-│   ├── test_risk.py                # Risk scoring and schema tests
-│   ├── test_streamlit_app.py       # Stage 5 end-to-end Streamlit AppTest & UI workflow tests
-│   └── test_synthetic_data.py      # Synthetic dataset validation tests
-├── frontend/
-│   └── streamlit_app.py            # Legacy Stage 1 static mockup (superseded by app/ui/dashboard.py)
-├── config/
-│   ├── __init__.py
-│   └── settings.py                 # Pydantic settings loading from .env
-├── .env                            # Local environment configuration (untracked in Git)
-├── .env.example                    # Template for environment configuration
-├── .gitignore                      # Git exclusion rules
-├── requirements.txt                # Python project dependencies
-├── README.md                       # Project documentation
-└── pyproject.toml                  # Tool configuration for black, ruff, and pytest
+│   ├── synthetic_data/                 # applicants.csv, applicants.json, ground_truth.json, manifest, metadata
+│   └── documents/                      # 30 synthetic PDF packages (APP0001–APP0030)
+├── docs/
+│   ├── screenshots/                    # Captured screenshots from live Streamlit workbench & Swagger docs
+│   └── stages/                         # Stage-by-stage technical reports & production readiness audit
+├── models/                             # risk_model.joblib & risk_model_metadata.json (SHA-256 verified)
+├── scripts/                            # Dataset generation, validation, training, evaluation, demo seed & PG migration
+├── tests/                              # 300 automated unit, integration, security & Streamlit AppTest tests
+├── .env.example                        # Local development environment template
+├── .env.production.example             # Production configuration template (no real secrets)
+├── PROJECT_ARCHITECTURE.md             # Detailed architecture & Mermaid diagram
+├── DEMO_GUIDE.md                       # 10–15 minute academic presentation walkthrough
+├── PROJECT_REPORT_OUTLINE.md           # 23-chapter academic capstone report outline
+└── requirements.txt                    # Python dependencies
 ```
+
+*(Note: `frontend/streamlit_app.py` is retained only as an obsolete Stage 1 static mockup shell and is superseded by `app/main.py`.)*
 
 ---
 
-## Setup Instructions
+## 8. Installation Instructions
 
-### 1. Create and Activate Virtual Environment
+### Prerequisites
+- Python **3.11+**
+- **Tesseract OCR** binary installed on `PATH` for rasterized PDF OCR (`brew install tesseract` on macOS, `sudo apt-get install tesseract-ocr` on Ubuntu/Debian)
+
+### Setup Steps
 
 ```bash
+# 1. Create and activate virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
-```
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-*(On Windows Command Prompt: `.venv\Scripts\activate`)*
-
-### 2. Install Dependencies
-
-```bash
+# 2. Install Python dependencies
 pip install -r requirements.txt
-```
 
----
-
-## Environment Variables
-
-Copy `.env.example` to create your local `.env` configuration:
-
-```bash
+# 3. Copy environment configuration template
 cp .env.example .env
+
+# 4. Initialize / migrate a local database cleanly
+DATABASE_URL="sqlite:///./local_dev.db" .venv/bin/alembic upgrade head
 ```
-
-Default configuration variables:
-
-| Variable | Description | Default |
-|---|---|---|
-| `GEMINI_API_KEY` | Google Gemini API key (planned for future LLM stage; currently unused) | *(Empty)* |
-| `DATABASE_URL` | Database connection URI | `sqlite:///./loan_underwriting.db` |
-| `APP_ENV` | Environment identifier (`development`, `test`, `production`) | `development` |
-| `LOG_LEVEL` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
-
-> *Note: Never commit real API keys or credentials to version control.*
 
 ---
 
-## Running the Application
+## 9. Environment Configuration
 
-### 1. Main Verification Entry Point
+Configuration is managed in [`config/settings.py`](config/settings.py) via `.env` or environment variables:
 
-Verify the core application packages, configuration, and SQLite audit table initialization:
+| Variable | Description | Local Default | Production Note |
+| :--- | :--- | :--- | :--- |
+| `APP_ENV` | `development`, `test`, or `production` | `development` | `production` enables fail-closed startup checks & hides Swagger docs |
+| `DATABASE_URL` | SQLite or PostgreSQL connection string | `sqlite:///./loan_underwriting.db` | Use an isolated path (`sqlite:////tmp/test.db`) for testing/demos |
+| `JWT_SECRET_KEY` | HMAC secret for signing JWT tokens | `DEV-ONLY-...` | **Mandatory** 32+ char high-entropy secret in `production` |
+| `JWT_ALGORITHM` | Token algorithm (`HS256`, `HS384`, `HS512`) | `HS256` | Asymmetric/`none` algorithms rejected |
+| `STREAMLIT_AUTH_REQUIRED` | Require login gate in Streamlit UI | `false` | Automatically `true` whenever `APP_ENV=production` |
+| `DEFAULT_ADMIN_PASSWORD` | Initial admin seed password (dev/test only) | `admin-dev-...` | Auto-seeding is disabled in `production` |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated CORS allowlist | `http://localhost:8501,...` | Wildcard `*` refused in `production` |
 
+See [`.env.example`](.env.example) and [`.env.production.example`](.env.production.example) for the complete list (including rate limiting, lockout thresholds, `JWT_ISSUER`, `JWT_AUDIENCE`, and `DB_POOL_*`).
+
+---
+
+## 10. Dataset Description (100% Synthetic)
+
+All data under `data/` was deterministically generated with `random_seed = 42` by [`scripts/generate_synthetic_dataset.py`](scripts/generate_synthetic_dataset.py) and [`scripts/generate_documents.py`](scripts/generate_documents.py):
+- **Structured Applicant Dataset (`N = 100`):** [`data/synthetic_data/applicants.csv`](data/synthetic_data/applicants.csv) and [`applicants.json`](data/synthetic_data/applicants.json) containing balanced synthetic risk cohorts (`LOW_RISK: 30`, `MEDIUM_RISK: 30`, `HIGH_RISK: 20`, `BORDERLINE: 20`).
+- **Document Packages (`N = 30`, `115` PDFs):** `data/documents/APP0001` through `APP0030` across 6 controlled cohorts:
+  - `APP0001`–`APP0005`: Normal consistent packages
+  - `APP0006`–`APP0010`: Income mismatch (`ANOM-INC-001`)
+  - `APP0011`–`APP0015`: Identity/name mismatch (`ANOM-ID-001`)
+  - `APP0016`–`APP0020`: Missing mandatory document (`missing_evidence`)
+  - `APP0021`–`APP0025`: Financial inconsistency (`ANOM-FIN-001`, `ANOM-FIN-002`)
+  - `APP0026`–`APP0030`: Borderline credit/DTI policy cases (`MANUAL_REVIEW`)
+- Every generated document is explicitly watermarked `SYNTHETIC DOCUMENT — FOR SOFTWARE TESTING ONLY` and uses synthetic identifiers (`SYN-ID-...`) with zero real individuals or accounts.
+
+---
+
+## 11. Running the Applications
+
+### CLI Health & Schema Verification
 ```bash
-.venv/bin/python app/main.py
+DATABASE_URL="sqlite:////tmp/demo_underwriting.db" .venv/bin/python app/main.py
 ```
 
-### 2. Loan Officer Streamlit Dashboard (Active UI)
-
-Launch the active Stage 9 Streamlit interactive review dashboard (`app/ui/dashboard.py`):
-
+### Streamlit Underwriting Workbench
 ```bash
-.venv/bin/streamlit run app/main.py
+# Unauthenticated local exploration mode (default in development)
+DATABASE_URL="sqlite:////tmp/demo_underwriting.db" .venv/bin/streamlit run app/main.py
+
+# Authenticated RBAC mode (recommended for live demo)
+DATABASE_URL="sqlite:////tmp/demo_underwriting.db" STREAMLIT_AUTH_REQUIRED=true \
+  .venv/bin/streamlit run app/main.py --server.port 8501
 ```
 
-*(Note: `frontend/streamlit_app.py` is an obsolete Stage 1 static mockup shell and is not the active application.)*
-
-### 3. FastAPI Backend Service (Stage 7)
-
-Launch the authenticated REST API backend under `/api/v1`:
-
+### FastAPI REST Backend (`/api/v1`)
 ```bash
-.venv/bin/uvicorn app.api.main:app --reload --port 8000
+DATABASE_URL="sqlite:////tmp/demo_underwriting.db" \
+  .venv/bin/uvicorn app.api.main:app --reload --port 8000
 ```
+- **Health Endpoint:** `http://127.0.0.1:8000/api/v1/health`
+- **Swagger / OpenAPI Docs (`APP_ENV=development`):** `http://127.0.0.1:8000/api/docs`
 
-Interactive OpenAPI docs (available when `APP_ENV=development`): `http://127.0.0.1:8000/api/docs`
+---
 
-- Supports JWT authentication (`/api/v1/auth/login`, `refresh`, `logout`, `me`), Admin user management (`/api/v1/users`), applicant & document upload APIs (`/api/v1/applicants`), underwriting execution (`/api/v1/underwriting`), RBAC + Maker-Checker human review endpoints (`/api/v1/reviews`), audit logs (`/api/v1/audit`), and external integration readiness (`/api/v1/integrations/status`).
-- See [`STAGE_7_BACKEND_AUTH_RBAC.md`](STAGE_7_BACKEND_AUTH_RBAC.md) for full architecture, permission matrix, secrets configuration, and Alembic / SQLite-to-PostgreSQL migration instructions.
+## 12. Demo Accounts Setup & Walkthrough
 
-### 4. Non-Destructive Database Migrations (Alembic & SQLite → PostgreSQL)
+Synthetic demo accounts are provisioned on demand via [`scripts/seed_demo_users.py`](scripts/seed_demo_users.py) using passwords supplied purely from environment variables (never hardcoded or committed to Git; strictly blocked when `APP_ENV=production`):
 
 ```bash
-# Apply additive Stage 7 auth/attribution schema migrations safely
+export DATABASE_URL="sqlite:////tmp/demo_underwriting.db"
 .venv/bin/alembic upgrade head
 
-# Non-destructively copy historical & auth rows to another SQLAlchemy database
-.venv/bin/python scripts/migrate_sqlite_to_postgres.py \
-    --source sqlite:///./loan_underwriting.db \
-    --target postgresql+psycopg://user:password@localhost:5432/loan_underwriting
+ALLOW_DEMO_SEED=true \
+DEMO_ADMIN_PASSWORD="<set-local-password>" \
+DEMO_OFFICER_PASSWORD="<set-local-password>" \
+DEMO_UNDERWRITER_PASSWORD="<set-local-password>" \
+DEMO_SUPERVISOR_PASSWORD="<set-local-password>" \
+.venv/bin/python scripts/seed_demo_users.py --confirm-local-demo
 ```
+
+Follow the complete 15-step 10–15 minute presentation sequence in [`DEMO_GUIDE.md`](DEMO_GUIDE.md). Real UI screenshots live in [`docs/screenshots/`](docs/screenshots/).
 
 ---
 
-## Running Tests and Code Quality
+## 13. Authentication, Roles & Workflows
 
-### Automated Unit Tests
+### Role-Based Access Control (RBAC)
+- **`ADMINISTRATOR`:** User CRUD, role assignment, account unlock, integration status, full portfolio/audit read access.
+- **`LOAN_OFFICER`:** Register applicants, upload validated PDFs, initiate underwriting runs, view own submitted applications/runs and read-only synthetic catalog (blocked from review queue and other officers' private applications).
+- **`UNDERWRITER`:** Inspect assigned/open review cases, evidence, and AI reasoning; submit `START_REVIEW`, `APPROVE`, `REJECT`, `REQUEST_ADDITIONAL_INFO`, `RETURN_FOR_INVESTIGATION`, `RETURN_TO_PENDING` decisions (blocked from decision corrections and self-reviews).
+- **`SUPERVISOR`:** All review inspection plus full portfolio audit analytics and authorized linked corrections (`is_correction=True`) after terminal human decisions.
 
-Run the test suite using `pytest` (audit DB tests use isolated temporary `tmp_path` SQLite databases, and setting `DATABASE_URL` provides extra safety against touching `loan_underwriting.db`):
-
-```bash
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
-```
-
-### Linting and Code Formatting
-
-Check code style and formatting standards:
-
-```bash
-ruff check .
-black --check .
-```
-
-To auto-format code with `black`:
-
-```bash
-black .
-```
+### Underwriting & Human Review Workflows
+1. **Underwriting Execution:** `DocumentIntakeAgent` extracts & validates PDF fields -> `EligibilityAgent` evaluates 10 policy rules -> `FraudAnomalyAgent` cross-checks income/EMIs/balance/names -> `RiskAgent` scores 15 features via `risk_model_rf_v2` -> `check_cross_agent_consistency` flags cross-agent conflicts -> `DecisionReasoningAgent` emits `APPROVE`, `REJECT`, or `MANUAL_REVIEW` and persists an immutable row in `underwriting_runs`.
+2. **Human Review & Audit:** Reviewers adjudicate cases via `Underwriter Review Queue` or `POST /api/v1/reviews/submit` (derived exclusively from authenticated identity, enforcing Maker-Checker self-review checks and optimistic concurrency). Every action appends a new `human_review_events` row while preserving `original_ai_recommendation` untouched.
 
 ---
 
-## Stage 2 — Synthetic Dataset & Loan Documents
+## 14. Evaluation Results & Verification Commands
 
-Stage 2 delivers a completely synthetic applicant dataset and multi-page loan document packages for algorithmic testing, OCR evaluation, risk modeling, and multi-agent underwriting demonstration.
+*(All benchmarks below measure deterministic behavior on the **synthetic** cohort; commands were verified against isolated temporary SQLite databases while leaving the reference `loan_underwriting.db` unmodified.)*
 
-### Overview
-
-- **100 Synthetic Applicants**: Structured profiles with realistic Indian names, demographic attributes, and internally consistent financial metrics (income, expenses, debt obligations, requested facility, credit scores, DTI ratios). Available in:
-  - `data/synthetic_data/applicants.csv`
-  - `data/synthetic_data/applicants.json`
-- **30 Document Packages**: Complete multi-page PDF packages (`data/documents/APP0001` through `data/documents/APP0030`) containing up to 4 documents per package:
-  1. `loan_application.pdf`: Declared applicant profile, requested loan amount, tenure, and obligations.
-  2. `identity_proof.pdf`: Simulated identity verification record with synthetic ID reference (`SYN-ID-APPXXXX-XXXXX`).
-  3. `salary_slip.pdf` / `income_statement.pdf`: Monthly payroll earnings and deductions statement.
-  4. `bank_statement.pdf`: 15–30 transaction ledger with salary credits, EMI debits, utility payments, and validated arithmetic.
-- **Document Formats**: Includes standard selectable text PDFs as well as rasterized image-only scanned PDFs (2 salary slips, 2 bank statements) to test both digital and OCR pipelines in Stage 3.
-- **Controlled Anomaly Cohorts (Ground Truth)**:
-  - **Normal Baseline (APP0001–APP0005)**: Complete document agreement and arithmetic consistency.
-  - **Income Mismatch (APP0006–APP0010)**: Declared income diverges from bank statement salary credits.
-  - **Name Mismatch (APP0011–APP0015)**: Discrepancy between salary slip employee name and applicant identity.
-  - **Missing Document (APP0016–APP0020)**: One mandatory document is genuinely omitted from the package.
-  - **Financial Inconsistency (APP0021–APP0025)**: Undisclosed recurring EMI auto-debits or mismatched closing bank balances (tracked as inconsistency flags, not confirmed fraud).
-  - **Borderline Cases (APP0026–APP0030)**: Valid, consistent documents where credit scores and DTI ratios sit right on underwriting policy thresholds for `MANUAL_REVIEW` testing.
-- **Ground-Truth Metadata & Manifest**:
-  - `data/synthetic_data/ground_truth.json`: Detailed ground-truth expectations, anomaly classifications, and expected field values.
-  - `data/synthetic_data/document_manifest.csv`: 120-row index tracking document paths, format, presence, and anomaly flags.
-  - `data/synthetic_data/dataset_metadata.json`: Dataset configuration, random seed (42), and distribution statistics.
-- **Reproducibility & Safety**:
-  - Seed 42 ensures reproducible synthetic applicant values and document contents. PDF metadata/timestamps do not need to be byte-identical.
-  - Strictly synthetic: Contains no real Aadhaar, PAN, bank account numbers, or real individuals' data. Every PDF is clearly watermarked: `"SYNTHETIC DOCUMENT — FOR SOFTWARE TESTING ONLY"` and `"SYNTHETIC — NOT A GOVERNMENT ID"`.
-
-### Dataset & ML Reliability Commands
-
-```bash
-# 1. Generate 100-applicant synthetic dataset (CSV, JSON, Metadata)
-python scripts/generate_synthetic_dataset.py
-
-# 2. Generate 30 document packages, manifest, and ground truth
-python scripts/generate_documents.py
-
-# 3. Run automated dataset, document, leakage, fairness & artifact validator
-python scripts/validate_dataset.py
-
-# 4. Reproducibly train ML risk Pipeline (stratified 80/20 split, CV on train only)
-python scripts/train_risk_model.py
-
-# 5. Evaluate ML model vs deterministic baseline on CV and held-out N=20 test split
-python scripts/evaluate_risk_model.py
-
-# 6. Run automated test suite
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
-```
-
-### ML Pipeline Reliability & Limitations (`risk_model_rf_v2`)
-
-- **Shared Feature Contract (`risk_features_v2`)**: Both training and runtime inference (`Applicant` and `DocumentPackageResult`) extract the exact 15 ordered features defined in `app/risk/feature_contract.py`, preserving explicit zero values (`0`, `0.0`) and `monthly_expenses` / `number_of_dependents`.
-- **Leakage-Free Imputation & Split**: `scripts/train_risk_model.py` uses a reproducible stratified 80/20 split (`random_state=42`; 80 train / 20 held-out test), fits `SimpleImputer(strategy="median")` + `RandomForestClassifier` strictly on the 80 training records, and evaluates 5-fold stratified cross-validation strictly inside the training partition (`96.25% +/- 3.06%` accuracy; `0.9530 +/- 0.0392` macro-F1).
-- **Honest Held-Out Test Performance (`N=20`)**: `95.00%` accuracy (`19/20`), `93.75%` balanced accuracy, `0.9365` macro-F1 (`1.0000` OVR ROC-AUC), compared against `60.00%` accuracy (`0.5655` macro-F1) for the deterministic weighted baseline (`RiskScorer`) on the same 20 held-out applicants.
-- **Fail-Fast Artifact Loading**: `MLRiskModel` validates serialized artifact and metadata feature contracts on load and refuses to silently auto-train or emit fabricated default risk scores if artifacts are missing or corrupted.
-- **Synthetic Data Scope Limitation**: Metrics come from a small 100-row synthetic cohort (not empirical historical bank defaults) and must never be represented as real-world credit performance. Protected attributes (`gender`) are strictly excluded from model features and audited solely for dataset representation.
-
-### Stage 3 — Document Intelligence Architecture & Safeguards
-
-- **Page-Level & Mixed-PDF Processing (`PDFReader` + `DocumentPackageProcessor`)**: Inspects every PDF page independently to track `native_text`, `ocr`, `empty`, and `error` page counts. Mixed PDFs containing both selectable digital text and rasterized images trigger local OCR selectively **only** on pages needing OCR, preserving per-page provenance (`page_number`) across extracted fields.
-- **OCR Preprocessing Workflow (`OCRProcessor` / `OCRConfig`)**: Converts rendered scans (default 300 DPI) cleanly via Pillow/NumPy preprocessing — upscaling low-resolution crops (`< 1200 px`), grayscale conversion, Tesseract OSD orientation correction (`min_osd_confidence >= 2.0`), selective autocontrast, and selective Otsu thresholding/median denoising — using `--oem 3 --psm 3` with bounded page-level caching.
-- **Multi-Signal Document Classification**: Classifies `loan_application`, `identity_proof`, `address_proof`, `salary_slip`, `income_statement`, `employment_proof`, and `bank_statement` using weighted heading, domain terminology, and field-pattern signals. Single generic keywords or closely competing documents resolve to `unknown` (`UNCLASSIFIED` / `AMBIGUOUS`).
-- **Field Validation & Heuristic Confidence (`validation.py`)**: Distinguishes `valid`, `unverified`, `invalid`, `missing`, and `ambiguous` field states (rejecting negative income, out-of-range credit scores/ages, and invalid calendar dates). Heuristic extraction confidence reflects extraction method, contextual label specificity, text quality, and validation status — strictly separated from classification confidence, credit risk score, and decision confidence.
-- **Package Intelligence & Security Safeguards (`security.py`)**: Detects binary SHA-256 and content duplicates (`duplicate_documents`), preserves multi-document field conflicts (`field_conflicts`), validates `.pdf` extensions and `%PDF-` signatures, enforces max file size (`25 MB`) and max page count (`100`), rejects password-protected PDFs safely, flags `/JavaScript`/`/OpenAction` markers passively without execution, and masks identifiers (`account_number`, `id_ref`) in logs.
-- **Limitations**: Synthetic benchmark covers 30 applicant packages (`115` single-page PDFs) plus an ephemeral mixed-PDF fixture; it verifies deterministic pipeline reliability rather than arbitrary third-party real-world document layouts.
-
-```bash
-# Run Stage 3 document classification, OCR, coverage & mixed-PDF evaluation
-.venv/bin/python scripts/evaluate_extraction.py
-```
+| Suite / Benchmark | Command | Verified Result |
+| :--- | :--- | :--- |
+| Full Automated Test Suite | `DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest -q` | **`300 passed`** (Stages 1–8 unit, API, security, DB, AppTest) |
+| Lint & Format | `.venv/bin/ruff check . && .venv/bin/black --check .` | Passed (`133 files` clean) |
+| Dataset & Artifact Integrity | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/validate_dataset.py` | Passed (`100/100` profiles, `30/30` doc dirs, feature parity) |
+| Stage 3 PDF & OCR Evaluation | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/evaluate_extraction.py` | `115/115` doc classification, `30/30` missing-set, `4/4` OCR scans, `1,525` valid fields |
+| Stage 4 Eligibility Evaluation | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/evaluate_eligibility.py` | Docs: `18` Eligible / `8` Ineligible / `4` Review; Full `N=100`: `72`/`28`/`0` |
+| Stage 5 ML Risk Evaluation | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/evaluate_risk_model.py` | 5-fold CV `96.25% +/- 3.06%`; Held-out `N=20` acc `95.00%` (F1 `0.9365`) vs baseline `60.00%` *(synthetic only)* |
+| Stage 6 Anomaly Cohort | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/evaluate_anomaly_detection.py` | `30/30` cohort detection (`15` TP / `15` TN / `0` FP), `5/5` missing docs separated from fraud |
+| Stage 4 End-to-End & Probes | `DATABASE_URL="sqlite:////tmp/test.db" .venv/bin/python scripts/evaluate_end_to_end.py` | `30/30` deterministic `SUCCESS` (`4 APPROVE`, `8 REJECT`, `18 MANUAL_REVIEW`); `4/4` failure/conflict probes safe |
 
 ---
 
-## Stage 6 — Fraud & Anomaly Detection Agent
+## 15. Known Limitations & Future Enhancements
 
-Stage 6 implements a local, deterministic analytical agent (`FraudAnomalyAgent`) that cross-verifies applicant declarations against Stage 3 structured document extraction outputs to identify cross-document inconsistencies and financial anomalies.
-
-### What Was Implemented
-- **Deterministic Cross-Document Consistency Engine (`CrossDocumentAnomalyDetector`)**:
-  - `ANOM-ID-001` (Identity Consistency): Token-based name comparison across application, identity proof, salary slip, and bank statement.
-  - `ANOM-INC-001` (Income Consistency): Flags declared income materially exceeding bank salary credits or salary slip net pay (> 15% tolerance).
-  - `ANOM-FIN-001` (Liability Verification): Detects undisclosed ongoing recurring EMI debits in bank statement ledgers (threshold: >= INR 2,000 difference).
-  - `ANOM-FIN-002` (Balance Verification): Identifies material shortfalls between declared bank balance and verified closing balance (> 25% and >= INR 10,000).
-  - `ANOM-DOC-001` (Employer Verification): Detects employer name mismatches between application and payroll documents.
-- **Explainable Anomaly Scoring (`AnomalyScorer`)**:
-  - Bounded 0–100 composite anomaly score based on centralized rule weights.
-  - Severity classification: `NONE` (0.0), `LOW` (0.1–25.0), `MEDIUM` (25.1–59.9), `HIGH` (60.0–100.0).
-  - Traceable evidence excerpts, observed values, and expected values for every flag.
-- **Strict Separation of Missing Evidence vs. Fraud Anomalies**:
-  - Missing documents are captured under `missing_evidence` as incomplete verification.
-  - Missing documents alone **never** trigger anomaly flags or fraud classifications.
-- **Architectural Isolation**:
-  - Operates 100% locally with zero external APIs, LLMs, or cloud dependencies.
-  - Strictly separated from credit risk scoring (Stage 5) and loan decisioning (Stage 8).
-
-### Evaluation & Verification Commands
-
-```bash
-# Run the controlled synthetic anomaly evaluation across all 30 applicant packages
-python scripts/evaluate_anomaly_detection.py
-
-# Run unit and integration tests
-pytest tests/test_fraud.py
-```
-
-### Example Output
-
-```text
-APP0006: has_anomalies=True, score=35.0, sev=MEDIUM, flags=['ANOM-INC-001'], missing=[]
-Evidence: "Income discrepancy detected: Declared monthly income (INR 85,000.00) materially exceeds verified bank statement recurring salary credit (INR 55,250.00) by 35.0%."
-
-APP0016: has_anomalies=False, score=0.0, sev=NONE, flags=[], missing=['bank_statement']
-Summary: "Notice: Missing document evidence (bank_statement). Incomplete documentation requires verification follow-up but does not constitute an anomaly flag."
-```
-
-### Limitations & Ethical AI Notice
-- **Controlled Synthetic Cohorts**: Evaluation reflects deterministic consistency checking on controlled synthetic cohorts; it does not represent empirical real-world banking fraud rates.
-- **Anomaly ≠ Confirmed Fraud**: Discrepancies may indicate clerical error, employer reporting variance, or document lag. The system flags items for human review and never asserts criminal guilt.
+- **PostgreSQL Runtime (`NOT RUN`):** SQLAlchemy schemas (`app/database/schema.py`, `app/auth/models.py`), connection pooling config, and Alembic DDL compilation for PostgreSQL are implemented, and a non-destructive copy tool (`scripts/migrate_sqlite_to_postgres.py`) exists. However, Stage 4–6 persistence helpers (`applications.py`, `audit.py`, `reviews.py`) still use raw `sqlite3` SQL (`get_database_connection()` explicitly rejects non-SQLite URLs), no Postgres Python driver is installed in `.venv`, and live PostgreSQL execution has not yet been tested.
+- **Synthetic Training & Heuristic Scores:** Model performance reflects `N=100` synthetic records (`80` train / `20` test), not empirical bank defaults; classification/decision confidences are heuristic agreement scores rather than calibrated probabilities.
+- **External Integrations:** Credit bureau, KYC, LLM reasoning, and webhook adapters (`app/integrations/`) operate strictly as local sandbox/no-op stubs.
+- **Future Enhancements:**
+  1. Convert Stage 4–6 raw `sqlite3` queries to SQLAlchemy Core and verify full integration tests against a live PostgreSQL instance.
+  2. Replace `python-jose` with `PyJWT` for modern cryptographic token maintenance.
+  3. Add Redis/API-gateway distributed rate limiting, email/MFA self-service recovery, shared encrypted object storage for PDFs, and re-calibration/fairness validation on empirical lending datasets.
 
 ---
 
-## Stage 7 — Multi-Agent Orchestrator
+## 16. Stage Documentation Index
 
-Stage 7 implements the `UnderwritingOrchestrator` engine and `OrchestratorAgent` facade coordinating the four specialized analytical agents (Document Intelligence, Eligibility, Risk Assessment, and Fraud/Anomaly Detection) into an end-to-end deterministic analysis pipeline.
-
-### What Was Implemented
-- **Deterministic Pipeline Coordination (`UnderwritingOrchestrator`)**:
-  - Ingests applicant identifier (`APP0001`–`APP0030`) or pre-loaded `Applicant` domain models.
-  - Enforces dependency-aware execution DAG: Document Intake runs before extracted-field consumers (Eligibility and Anomaly agents).
-  - Collects analytical outputs into a single unified `UnderwritingAnalysisResult`.
-- **Fault-Tolerant Execution & Partial-Result Preservation**:
-  - Captures per-agent lifecycle status (`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`, `SKIPPED`).
-  - Implements failure isolation: If an individual agent fails, other successful analytical findings are preserved in a `PARTIAL_SUCCESS` state without unhandled crashes.
-- **Audit Telemetry & Execution Tracking**:
-  - Records wall-clock execution time in milliseconds (`duration_ms`) and UTC timestamps for each agent and the total pipeline.
-  - Operates 100% locally and deterministically with zero LLMs or cloud API dependencies.
-- **Strict Architectural Separation (No Stage 8 Decisioning)**:
-  - Aggregates findings and synthesizes an executive analytical summary.
-  - Strictly halts before generating `APPROVE` / `REJECT` / `MANUAL_REVIEW` recommendations (reserved for Stage 8).
-
-### Evaluation & Verification Commands
-
-```bash
-# Run the 30-package pipeline evaluation
-.venv/bin/python scripts/evaluate_orchestrator.py
-
-# Run full Stage 4 end-to-end reliability, determinism & safety-probe evaluation
-.venv/bin/python scripts/evaluate_end_to_end.py
-
-# Run orchestrator tests (including dependency order, validation, failure injection & determinism)
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_orchestrator.py
-```
-
----
-
-## Stage 8 — Decision & Reasoning Agent
-
-Stage 8 implements the `DecisionReasoningAgent` (`DecisionAgent` facade) that synthesizes multi-agent analytical outputs collected by the Stage 7 Multi-Agent Orchestrator into one of three public categorical underwriting recommendations:
-
-```text
-APPROVE
-REJECT
-MANUAL_REVIEW
-```
-
-### What Was Implemented
-- **Deterministic Policy & Reasoning Engine (`DecisionRulesEngine`)**:
-  - Implements a 7-tier strict rule precedence hierarchy:
-    1. Pipeline Integrity Check (`FAILED` → `MANUAL_REVIEW`)
-    2. Critical Eligibility Failure Check (`INELIGIBLE` → `REJECT`)
-    3. Mandatory Evidence Completeness Check (Missing Required Docs → `MANUAL_REVIEW`)
-    4. Material Cross-Document Discrepancy Check (`HIGH`/`MEDIUM` Anomaly → `MANUAL_REVIEW`)
-    5. Eligibility Review Required Check (`REVIEW_REQUIRED` → `MANUAL_REVIEW`)
-    6. Repayment Risk Assessment Check (`HIGH` Risk → `REJECT`; `BORDERLINE` Risk → `MANUAL_REVIEW`)
-    7. Clean Approval Synthesis (Eligible + Acceptable Risk + Complete Docs → `APPROVE`)
-- **Zero LLM / No Retraining Constraint**:
-  - Operates 100% locally and deterministically using explicit policy rules without external cloud APIs, OpenAI, Gemini, LangChain, or AutoGen.
-  - Consumes Stage 5 ML risk scores without retraining or altering features.
-- **Evidence Traceability & Factor Categorization**:
-  - Standardized machine-readable reason codes (`DEC-ELIG-001`/`004`, `DEC-RISK-001`/`004`, `DEC-ANOM-001`, `DEC-DOC-001`, `DEC-FRAUD-001`, `DEC-CON-001`, `DEC-SYS-001`, `DEC-APP-001`).
-  - Exposes structured decision telemetry (`eligibility_status`, `risk_category`, `risk_score`, `fraud_status`, `document_verification_status`, `missing_documents`, `validation_warnings`, `material_anomalies`, `review_reasons`, `agent_statuses`, `consistency_conflicts`) alongside `positive_factors`, `negative_factors`, `blocking_factors`, and `supporting_evidence`.
-  - Fail-closed guarantees ensure missing/failed agents, invalid/conflicting documents, non-finite risk scores, or cross-agent contradictions strictly block auto-approval and require explicit human review (`MANUAL_REVIEW`).
-- **Decision Confidence Score**:
-  - Bounded 0.0–100.0% evidence completeness and analytical agreement score.
-  - Penalizes missing documents, borderline risk profiles, and cross-document anomalies.
-  - Strictly defined as a measure of evidence consistency, **not** an empirical probability of default or fraud.
-- **Human-in-the-Loop Governance**:
-  - All recommendations enforce `human_review_required = True`.
-  - The AI assistant advises human loan officers; it does not replace authorized banking decisions.
-
-### Evaluation & Verification Commands
-
-```bash
-# Run the 30-applicant Stage 8 underwriting decision evaluation
-python scripts/evaluate_decisions.py
-
-# Run unit and integration tests
-pytest tests/test_decision_agent.py
-```
-
-### Example Reasoning Outputs
-
-```text
---- Clean Applicant (APP0002) ---
-Recommendation:        APPROVE (Confidence: 100.0%)
-Human Review Required: True
-Primary Reason:        [DEC-APP-001] Application satisfies all policy requirements: ELIGIBLE status,
-                       MEDIUM risk profile (Score: 45.9/100), complete document evidence, zero anomalies.
-
---- Ineligible Applicant (APP0001) ---
-Recommendation:        REJECT (Confidence: 100.0%)
-Human Review Required: True
-Primary Reason:        [DEC-ELIG-001] Application is INELIGIBLE due to failure of mandatory rule(s):
-                       Minimum Credit Score Threshold (Credit score 584 < 650).
-
---- Discrepancy Applicant (APP0006) ---
-Recommendation:        MANUAL_REVIEW (Confidence: 85.0%)
-Human Review Required: True
-Primary Reason:        [DEC-ANOM-001] Cross-document discrepancy detected (ANOM-INC-001): Declared income
-                       materially exceeds bank statement salary credits by 35.0%.
-```
-
-### Limitations & Stage Boundary Notice
-- **Synthetic Data**: Evaluated on controlled synthetic cohorts; does not represent empirical real-world default or fraud rates.
-- **Anomaly ≠ Confirmed Fraud**: Discrepancies warrant human review; they are never equated to confirmed fraud.
-- **Stage Boundary**: Stage 8 is COMPLETE.
-
----
-
-## Stage 5 / Stage 6 / Stage 9 — Streamlit Workbench, Human Review & Audit Trail
-
-The interactive **Streamlit Application** (`app/ui/`), **Human Underwriter Review Service** (`app/review/`), and **SQLite Audit Trail** (`app/database/`) provide an 8-page local underwriting workbench backed directly by the Stage 1–4 multi-agent pipeline (detailed in [`STAGE_5_STREAMLIT_APPLICATION.md`](STAGE_5_STREAMLIT_APPLICATION.md) and [`STAGE_6_HUMAN_REVIEW_AUDIT.md`](STAGE_6_HUMAN_REVIEW_AUDIT.md)):
-
-### How to Start the Application
-
-```bash
-# Verify configuration and initialize SQLite tables cleanly via CLI
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/python app/main.py
-
-# Launch the Streamlit Underwriting Application
-.venv/bin/streamlit run app/main.py
-```
-
-### Key Implemented Workflows
-
-1. **Dashboard**: Displays SQLite-derived application vs execution KPIs (excluding failed pipeline runs from completed application totals) alongside Human Review Queue status counts, decision/risk distributions, daily trends, and recent activity filters.
-2. **Underwriter Review Queue (Stage 6)**:
-   - Surfaces cases requiring human attention (`MANUAL_REVIEW`, incomplete/unverified docs, consistency conflicts, unavailable/failed agent runs, `PENDING`/`ADDITIONAL_INFO_REQUESTED`/`INVESTIGATION_REQUIRED`).
-   - Supports side-by-side inspection of applicant details, AI analysis, masked document evidence, and review timelines while keeping **AI Recommendation**, **Pipeline Status**, **Human Review Status**, and **Final Human Decision** strictly separate.
-   - Records validated, append-only actions (`APPROVE`, `REJECT`, `REQUEST_ADDITIONAL_INFO`, `RETURN_FOR_INVESTIGATION`, `START_REVIEW`, `RETURN_TO_PENDING`) and linked decision corrections without ever altering original AI recommendations.
-3. **New Application (Applicant Intake & PDF Upload)**:
-   - Schema-validated `Applicant` intake preserving valid zero values (`existing_emi=0.0`, `bank_balance=0.0`) with collision-free reference ID generation (`APP-YYYYMMDD-XXXX`).
-   - Multi-file PDF upload validation (`.pdf`, `<= 25 MB`, `%PDF-` signature, active-content scan, SHA-256 deduplication), per-file removal, cached pre-submission Stage 3 extraction previews, ephemeral temp-directory cleanup, duplicate-submission prevention, and safe execution through `UnderwritingOrchestrator` + `DecisionReasoningAgent`.
-4. **Applications & Application Details**: Unified directory merging persisted `submitted_applications` and read-only synthetic reference applicants (`APP0001`–`APP0100`) without join duplication, showing separate AI vs human statuses, additional-info follow-ups, and multi-run history.
-5. **Underwriting Results**: Presents mapped AI recommendations (`APPROVED (APPROVE)`, `REJECTED (REJECT)`, `MANUAL_REVIEW`), explicit AI vs Pipeline vs Human Review summary, eligibility rules, ML risk tier/score (`Unavailable` when missing — never `0.0`), fraud status (`UNAVAILABLE` when failed — never `NONE`), document verification diagnostics, cross-agent conflicts, review reasons, and agent statuses.
-6. **Document Review**: Per-document OCR/page telemetry, classification confidence (heuristic notice), missing/invalid/ambiguous/conflicting fields, and privacy-masked identifiers/account numbers.
-7. **Audit History**: Read-only compliance ledger querying SQLite `underwriting_runs` (`details_snapshot_json`) and append-only `human_review_events` with multi-filter search, linked correction tracing, and zero edit/delete actions.
-
-### Human-in-the-Loop, Attribution & Verification Commands
-
-- **Advisory AI + Separate Human Decision**: AI outputs remain read-only (`AI RECOMMENDATION`), while authorized human decisions persist separately in `human_review_events`.
-- **Attribution Notice**: In unauthenticated local prototype mode (`STREAMLIT_AUTH_REQUIRED=false`), Streamlit accepts attribution strings (`Reviewer ID`); via the FastAPI `/api/v1` backend or signed-in Streamlit sessions (`Access & Identity` sidebar panel / `STREAMLIT_AUTH_REQUIRED=true`), identity, role, and Maker-Checker rules are enforced server-side from verified tokens (detailed in [`STAGE_7_BACKEND_AUTH_RBAC.md`](STAGE_7_BACKEND_AUTH_RBAC.md)).
-- **Review, UI & Audit Tests**:
-
-```bash
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_human_review.py tests/test_streamlit_app.py tests/test_dashboard_audit.py -v
-```
-
----
-
-## Development Roadmap
-
-- **Stage 0 — Project Synopsis**: COMPLETE
-- **Stage 1 — Core Project Foundation**: COMPLETE
-- **Stage 2 — Synthetic Dataset & Test Documents**: COMPLETE
-- **Stage 3 — Document Intelligence / Document Intake**: COMPLETE
-- **Stage 4 — Eligibility Agent**: COMPLETE
-- **Stage 5 — Risk Assessment Agent**: COMPLETE
-- **Stage 6 — Fraud & Anomaly Detection Agent**: COMPLETE
-- **Stage 7 — Multi-Agent Orchestrator**: COMPLETE
-- **Stage 8 — Decision & Reasoning Agent**: COMPLETE
-- **Stage 9 — Dashboard & Audit Trail**: COMPLETE
-- **Stage 5–6 (App & HITL Audit) — Streamlit Workbench & Human Underwriter Review**: COMPLETE
-- **Stage 7 (Backend/Security) — FastAPI Backend, Auth, RBAC, Migrations & Integration Foundations**: COMPLETE (`STAGE_7_BACKEND_AUTH_RBAC.md`)
-
-
+- [`PROJECT_ARCHITECTURE.md`](PROJECT_ARCHITECTURE.md) | [`DEMO_GUIDE.md`](DEMO_GUIDE.md) | [`PROJECT_REPORT_OUTLINE.md`](PROJECT_REPORT_OUTLINE.md) | [`docs/stages/`](docs/stages/README.md) | [`docs/screenshots/`](docs/screenshots/README.md)
+- [`STAGE_3_DOCUMENT_INTELLIGENCE.md`](docs/stages/STAGE_3_DOCUMENT_INTELLIGENCE.md) | [`STAGE_4_ELIGIBILITY.md`](docs/stages/STAGE_4_ELIGIBILITY.md) | [`STAGE_5_RISK_ASSESSMENT.md`](docs/stages/STAGE_5_RISK_ASSESSMENT.md)
+- [`STAGE_6_FRAUD_ANOMALY_DETECTION.md`](docs/stages/STAGE_6_FRAUD_ANOMALY_DETECTION.md) | [`STAGE_7_MULTI_AGENT_ORCHESTRATOR.md`](docs/stages/STAGE_7_MULTI_AGENT_ORCHESTRATOR.md) | [`STAGE_8_DECISION_REASONING.md`](docs/stages/STAGE_8_DECISION_REASONING.md)
+- [`STAGE_5_STREAMLIT_APPLICATION.md`](docs/stages/STAGE_5_STREAMLIT_APPLICATION.md) | [`STAGE_6_HUMAN_REVIEW_AUDIT.md`](docs/stages/STAGE_6_HUMAN_REVIEW_AUDIT.md) | [`STAGE_7_BACKEND_AUTH_RBAC.md`](docs/stages/STAGE_7_BACKEND_AUTH_RBAC.md) | [`STAGE_8_PRODUCTION_READINESS.md`](docs/stages/STAGE_8_PRODUCTION_READINESS.md) | [`STAGE_9_DASHBOARD_AUDIT_TRAIL.md`](docs/stages/STAGE_9_DASHBOARD_AUDIT_TRAIL.md)

@@ -49,8 +49,10 @@ class DisabledLocalLLMProvider(LLMReasoningProvider):
     def summarize_case(self, case_context: Dict[str, Any]) -> IntegrationResult:
         return IntegrationResult(
             service_name=self.service_name,
+            status=IntegrationStatus.DISABLED,
             success=False,
             sandboxed=True,
+            timed_out=False,
             payload={"keys_present": sorted(case_context.keys())},
             error="External LLM calls are disabled; deterministic local summary applies.",
         )

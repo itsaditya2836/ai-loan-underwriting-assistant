@@ -131,6 +131,20 @@ def init_audit_table() -> None:
         cursor.execute(create_index_ts_sql)
         cursor.execute(create_index_rec_sql)
         cursor.execute(create_index_init_sql)
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_underwriting_runs_no_update
+            BEFORE UPDATE ON underwriting_runs
+            BEGIN
+                SELECT RAISE(ABORT, 'Audit table underwriting_runs is append-only; UPDATE is prohibited.');
+            END;
+            """)
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_underwriting_runs_no_delete
+            BEFORE DELETE ON underwriting_runs
+            BEGIN
+                SELECT RAISE(ABORT, 'Audit table underwriting_runs is append-only; DELETE is prohibited.');
+            END;
+            """)
         logger.info("Audit table 'underwriting_runs' initialized successfully.")
 
 

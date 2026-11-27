@@ -33,6 +33,14 @@ def _ensure_column(table_name: str, column: sa.Column) -> None:
 def upgrade() -> None:
     """Create missing Stage 7 auth/application tables and apply non-destructive additive columns."""
     bind = op.get_bind()
+    is_offline = bool(op.get_context().as_sql)
+
+    if is_offline:
+        # Offline --sql DDL generation emits fresh CREATE TABLE statements cleanly
+        auth_metadata.create_all(bind, checkfirst=False)
+        app_metadata.create_all(bind, checkfirst=False)
+        return
+
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
 
@@ -89,6 +97,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade only removes newly created Stage 7 auth tables; historical records remain safe."""
     bind = op.get_bind()
+    if op.get_context().as_sql:
+        for tbl_name in ("login_attempts", "refresh_tokens", "users"):
+            op.drop_table(tbl_name)
+        return
     inspector = sa.inspect(bind)
     existing = set(inspector.get_table_names())
     for tbl in ("login_attempts", "refresh_tokens", "users"):

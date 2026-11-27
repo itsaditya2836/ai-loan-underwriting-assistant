@@ -239,6 +239,7 @@ def get_authenticated_ui_user() -> Optional[Any]:
         return auth.get_current_user(str(token))
     except AuthenticationError:
         st.session_state.pop(STATE_AUTH_ACCESS_TOKEN, None)
+        st.session_state.pop(STATE_AUTH_REFRESH_TOKEN, None)
         return None
     except Exception:
         return None

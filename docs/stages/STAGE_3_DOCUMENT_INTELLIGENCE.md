@@ -68,14 +68,14 @@ Applicant Document Package (data/documents/APPXXXX/)
 
 ## Implemented Modules & Responsibilities
 
-### 1. PDF Reading & Reliability ([pdf_reader.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/pdf_reader.py))
+### 1. PDF Reading & Reliability ([pdf_reader.py](../../app/document_processing/pdf_reader.py))
 - Inspects every PDF page independently (`PageContent`) instead of forcing one document-wide OCR decision.
 - Classifies each page individually as `native_text`, `ocr_required`, `empty` (blank), or `error`.
 - Correctly flags mixed PDFs (`is_mixed = True`, `is_scanned = True`) so scanned pages inside otherwise digital PDFs still receive OCR, while clean digital pages are preserved untouched.
 - Tracks document-level counts (`page_count`, `successful_pages`, `native_text_pages`, `empty_pages`, `failed_pages`, `file_size_bytes`, `content_sha256`, `security_warnings`).
 - Enforces controlled exceptions (`PDFValidationError`, `PDFEncryptedError`, `PDFCorruptedError`, `PDFSizeLimitError`) under `strict=True` and returns structured `PDFDocumentInfo(error=...)` by default so one broken file does not crash the pipeline.
 
-### 2. Local OCR Workflow ([ocr.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/ocr.py))
+### 2. Local OCR Workflow ([ocr.py](../../app/document_processing/ocr.py))
 - Driven cleanly by `OCRConfig` (default `default_dpi = 300`, `tesseract_config = "--oem 3 --psm 3"`, `min_upscale_width = 1200`, `max_image_dimension = 4500`, `min_osd_confidence = 2.0`).
 - **Preprocessing (`preprocess_image`)**:
   1. EXIF transpose (`ImageOps.exif_transpose`).
@@ -86,7 +86,7 @@ Applicant Document Package (data/documents/APPXXXX/)
   6. Selective median denoising (on upscaled noisy images) and Otsu thresholding (when grayscale background contrast is compressed without damaging crisp 300 DPI text).
 - Supports targeted `ocr_pages(file_path, page_numbers=...)` for mixed PDFs and bounded in-memory page caching to eliminate duplicate OCR work.
 
-### 3. Document Classification ([extractor.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/extractor.py))
+### 3. Document Classification ([extractor.py](../../app/document_processing/extractor.py))
 Supports seven canonical financial/KYC categories plus explicit `unknown`:
 - `loan_application`
 - `identity_proof` (normalizing `identity_verification`)
@@ -103,7 +103,7 @@ Key safeguards:
 - Surfaces competing strong categories or tight score margins as `AMBIGUOUS` (`document_type = "unknown"`, `is_ambiguous = True`) instead of guessing.
 - Keeps `classification_confidence` completely independent from field extraction confidence.
 
-### 4. Structured Field Extraction, Validation & Confidence ([extractor.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/extractor.py) & [validation.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/validation.py))
+### 4. Structured Field Extraction, Validation & Confidence ([extractor.py](../../app/document_processing/extractor.py) & [validation.py](../../app/document_processing/validation.py))
 - **Page-Aware Contextual Extraction**: Processes page-by-page (`page_number` preserved on every `ExtractedField`), extracting structured fields using explicit contextual labels (never bare number patterns like unlabeled `NN Years` matching `age`). Distinguishes payroll `SALARY CREDIT` deposits from non-salary credits (`other_income`) in bank statements.
 - **Additional Extracted Coverage**: Includes `submission_date`, `facility_requested`, `employment_years`, `monthly_expenses`, `number_of_dependents`, `estimated_new_emi`, `issue_date`, `dob`, `address`, `designation`, `days_paid`, `employment_start_date`, `opening_balance`, `total_credits`, `total_debits`, and `masked_value` for sensitive identifiers.
 - **Five Validation States**:
@@ -114,12 +114,12 @@ Key safeguards:
   - `ambiguous`: Distinct conflicting values extracted across pages/matches within the same document.
 - **Heuristic Confidence (`compute_extraction_confidence`)**: Transparent rule-based score in `[0.0, 0.96]` computed from extraction method (`regex_digital`, `table_parser`, `regex_ocr`, `header_positional`, `generic_fallback`), label specificity, text readability quality, and validation state. It is **not** a calibrated probability.
 
-### 5. Package Processing & Cross-Document Consistency ([document_package.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/document_package.py) & [detectors.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/fraud/detectors.py))
+### 5. Package Processing & Cross-Document Consistency ([document_package.py](../../app/document_processing/document_package.py) & [detectors.py](../../app/fraud/detectors.py))
 - **Package Telemetry**: Aggregates `total_pages`, `native_text_pages`, `ocr_pages`, `empty_pages`, `failed_pages`, `unclassified_documents`, `duplicate_documents` (SHA-256 binary & normalized-text deduplication before redundant OCR), `field_conflicts`, `missing_fields`, `invalid_fields`, `ambiguous_fields`, and `security_warnings`.
 - **Conflict Preservation**: Preserves conflicting field values across multiple documents (such as two salary slips) in `field_conflicts` and document-scoped keys rather than silently overwriting.
 - **Cross-Document Consistency (`CrossDocumentAnomalyDetector`)**: Ignores `invalid` fields, normalizes benign corporate suffixes (`Pvt. Ltd.`, `Ltd`, `LLP`) and honorifics (`Mr.`, `Ms.`), directly compares `salary_slip.net_salary` vs `bank_statement.salary_credit` (within configured tolerance), compares multiple salary slips, verifies `employment_proof` vs `salary_slip` employers, and separates missing evidence from fraud flags.
 
-### 6. Performance & Security Safeguards ([security.py](file:///Users/aditya/Desktop/Stuff/Mini%20Project/app/document_processing/security.py))
+### 6. Performance & Security Safeguards ([security.py](../../app/document_processing/security.py))
 - Validates `.pdf` extension, non-empty size, `%PDF-` signature header, configurable max file size (`25 MB`) and max pages (`100`).
 - Detects `/JavaScript`, `/JS`, `/OpenAction`, `/Launch`, and `/AA` markers passively without executing embedded actions.
 - Masks sensitive identifiers (`mask_identifier`, `mask_sensitive_text`) in logs and diagnostic summaries.

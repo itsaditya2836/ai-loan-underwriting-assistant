@@ -8,11 +8,12 @@ Provides:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (
     Boolean,
     Column,
@@ -54,6 +55,7 @@ users_table = Table(
     Column("is_active", Boolean, nullable=False, default=True),
     Column("is_locked", Boolean, nullable=False, default=False),
     Column("failed_login_count", Integer, nullable=False, default=0),
+    Column("token_version", Integer, nullable=False, default=0),
     Column("last_login_at", DateTime(timezone=True), nullable=True),
     Column(
         "created_at",
@@ -114,6 +116,10 @@ login_attempts_table = Table(
 # ---------------------------------------------------------------------------
 
 
+_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 class UserCreate(BaseModel):
     """Request schema for creating a new user."""
 
@@ -123,15 +129,43 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
     role: Role = Field(default=Role.LOAN_OFFICER)
 
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not _USERNAME_PATTERN.fullmatch(cleaned):
+            raise ValueError(
+                "Username must be 3-64 characters using letters, digits, '.', '-', or '_'."
+            )
+        return cleaned
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        cleaned = v.strip().lower()
+        if not _EMAIL_PATTERN.fullmatch(cleaned):
+            raise ValueError("Invalid email address format.")
+        return cleaned
+
 
 class UserUpdate(BaseModel):
     """Request schema for updating an existing user."""
 
-    full_name: Optional[str] = Field(default=None, max_length=128)
-    email: Optional[str] = Field(default=None, max_length=256)
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=128)
+    email: Optional[str] = Field(default=None, min_length=5, max_length=256)
     role: Optional[Role] = None
     is_active: Optional[bool] = None
     is_locked: Optional[bool] = None
+
+    @field_validator("email")
+    @classmethod
+    def _validate_optional_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip().lower()
+        if not _EMAIL_PATTERN.fullmatch(cleaned):
+            raise ValueError("Invalid email address format.")
+        return cleaned
 
 
 class UserPublic(BaseModel):
@@ -161,6 +195,7 @@ class User(BaseModel):
     is_active: bool = True
     is_locked: bool = False
     failed_login_count: int = 0
+    token_version: int = 0
     last_login_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

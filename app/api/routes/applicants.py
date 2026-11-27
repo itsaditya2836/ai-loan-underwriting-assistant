@@ -137,7 +137,8 @@ async def create_applicant(
         )
         return saved
     except Exception as exc:
+        logger.error("Failed to create applicant '%s': %s", safe_id, exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to create applicant: {exc}",
+            detail="Failed to register applicant profile.",
         )

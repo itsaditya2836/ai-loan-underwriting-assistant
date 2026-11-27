@@ -52,7 +52,9 @@ class NoOpWebhookPublisher(AuditWebhookPublisher):
         logger.debug("NoOpWebhookPublisher received event '%s'.", event_type)
         return IntegrationResult(
             service_name=self.service_name,
+            status=IntegrationStatus.DISABLED,
             success=True,
             sandboxed=True,
+            timed_out=False,
             payload={"event_type": event_type, "dispatched": False},
         )

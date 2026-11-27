@@ -22,6 +22,7 @@ from app.utils.helpers import get_logger
 logger = get_logger(__name__)
 
 DOCUMENTS_BASE_DIR = os.path.join("data", "documents")
+MAX_FILES_PER_UPLOAD = 10
 
 router = APIRouter()
 
@@ -58,6 +59,11 @@ async def upload_documents(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one PDF file is required.",
+        )
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Maximum {MAX_FILES_PER_UPLOAD} documents allowed per upload request.",
         )
 
     base_real = os.path.realpath(DOCUMENTS_BASE_DIR)

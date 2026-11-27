@@ -50,8 +50,14 @@ class LocalSyntheticKYCAdapter(KYCVerificationProvider):
     ) -> IntegrationResult:
         return IntegrationResult(
             service_name=self.service_name,
+            status=IntegrationStatus.SANDBOX,
             success=False,
             sandboxed=True,
-            payload={"applicant_id": applicant_id, "id_ref_supplied": bool(id_ref)},
+            timed_out=False,
+            payload={
+                "applicant_id": applicant_id,
+                "id_ref_supplied": bool(id_ref),
+                "synthetic_sandbox": True,
+            },
             error="External KYC verification provider is in local sandbox mode.",
         )

@@ -35,8 +35,11 @@ class IntegrationResult(BaseModel):
     """Standardized envelope returned by external integration adapters."""
 
     service_name: str
+    status: IntegrationStatus = IntegrationStatus.SANDBOX
     success: bool
     sandboxed: bool = True
+    timed_out: bool = False
+    latency_ms: Optional[float] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

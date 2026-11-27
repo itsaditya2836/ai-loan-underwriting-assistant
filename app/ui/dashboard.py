@@ -134,6 +134,7 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
     """Render optional RBAC session sign-in/sign-out panel in the sidebar."""
     auth_user = get_authenticated_ui_user()
     settings = get_settings()
+    auth_enforced = settings.is_streamlit_auth_enforced()
 
     with st.sidebar:
         st.markdown("### Access & Identity")
@@ -146,13 +147,9 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
                 st.rerun()
         else:
             mode_label = (
-                "Sign In Required"
-                if settings.streamlit_auth_required
-                else "Sign In (Optional RBAC)"
+                "Sign In Required" if auth_enforced else "Sign In (Optional RBAC)"
             )
-            with st.expander(
-                mode_label, expanded=bool(settings.streamlit_auth_required)
-            ):
+            with st.expander(mode_label, expanded=auth_enforced):
                 uname = st.text_input("Username", key="ui_login_username")
                 pwd = st.text_input(
                     "Password", type="password", key="ui_login_password"
@@ -163,7 +160,8 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
 
                         auth_svc = AuthService()
                         auth_svc.init_tables()
-                        auth_svc.seed_default_admin()
+                        if not settings.is_production():
+                            auth_svc.seed_default_admin()
                         tokens = auth_svc.login(uname, pwd)
                         st.session_state[STATE_AUTH_ACCESS_TOKEN] = tokens.access_token
                         st.session_state[STATE_AUTH_REFRESH_TOKEN] = (
@@ -177,8 +175,17 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
 
 def render_dashboard() -> None:
     """Render the complete Stage 5 Streamlit application controller."""
-    init_db()
     apply_fintech_styles()
+    settings = get_settings()
+
+    # Fail closed if production configuration lacks secure secrets/CORS rules
+    try:
+        settings.validate_production_security()
+    except RuntimeError as exc:
+        st.error(f"Startup Blocked — Security Misconfiguration: {exc}")
+        return
+
+    init_db()
     init_session_state(default_applicant_ref_fn=generate_applicant_reference)
 
     # Top Header
@@ -192,9 +199,9 @@ def render_dashboard() -> None:
     )
 
     auth_user = _render_sidebar_auth_widget()
-    if get_settings().streamlit_auth_required and auth_user is None:
+    if settings.is_streamlit_auth_enforced() and auth_user is None:
         st.info(
-            "Authentication is required (`STREAMLIT_AUTH_REQUIRED=true`). "
+            "Authentication is required (`APP_ENV=production` or `STREAMLIT_AUTH_REQUIRED=true`). "
             "Please sign in using the sidebar Access & Identity panel."
         )
         return

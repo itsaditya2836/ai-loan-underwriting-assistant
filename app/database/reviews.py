@@ -92,6 +92,20 @@ def init_reviews_table() -> None:
         cursor.execute(idx_run_sql)
         cursor.execute(idx_hash_sql)
         cursor.execute(idx_user_sql)
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_human_reviews_no_update
+            BEFORE UPDATE ON human_review_events
+            BEGIN
+                SELECT RAISE(ABORT, 'Audit table human_review_events is append-only; UPDATE is prohibited.');
+            END;
+            """)
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_human_reviews_no_delete
+            BEFORE DELETE ON human_review_events
+            BEGIN
+                SELECT RAISE(ABORT, 'Audit table human_review_events is append-only; DELETE is prohibited.');
+            END;
+            """)
 
 
 def _row_to_review_dict(row: Any) -> Dict[str, Any]:
