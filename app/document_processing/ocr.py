@@ -190,14 +190,19 @@ class OCRProcessor:
                 return 0
             rotate_cw = int(rot_match.group(1))
             osd_conf = float(conf_match.group(1))
-            if rotate_cw in (90, 180, 270) and osd_conf >= self.config.min_osd_confidence:
+            if (
+                rotate_cw in (90, 180, 270)
+                and osd_conf >= self.config.min_osd_confidence
+            ):
                 return rotate_cw
         except Exception:
             # OSD can fail safely on sparse text or blank blocks; do not fail OCR.
             return 0
         return 0
 
-    def preprocess_image(self, image: Image.Image) -> Tuple[Image.Image, List[str], int]:
+    def preprocess_image(
+        self, image: Image.Image
+    ) -> Tuple[Image.Image, List[str], int]:
         """Apply conservative Pillow preprocessing suitable for financial documents."""
         steps: List[str] = []
         orientation_deg = 0
@@ -209,10 +214,15 @@ class OCRProcessor:
             return work, steps, orientation_deg
 
         # 1. Upscale low-resolution inputs while enforcing memory upper bound
-        if self.config.upscale_low_res and 0 < work.width < self.config.min_upscale_width:
+        if (
+            self.config.upscale_low_res
+            and 0 < work.width < self.config.min_upscale_width
+        ):
             scale = min(3.0, self.config.min_upscale_width / float(work.width))
             new_w = min(int(round(work.width * scale)), self.config.max_image_dimension)
-            new_h = min(int(round(work.height * scale)), self.config.max_image_dimension)
+            new_h = min(
+                int(round(work.height * scale)), self.config.max_image_dimension
+            )
             if new_w > work.width and new_h > work.height:
                 work = work.resize((new_w, new_h), Image.Resampling.LANCZOS)
                 steps.append(f"upscale({new_w}x{new_h})")
@@ -277,7 +287,9 @@ class OCRProcessor:
 
     def _make_cache_key(self, payload: bytes, dpi: int) -> str:
         digest = hashlib.sha256(payload).hexdigest()
-        return f"{digest}:{dpi}:{self.tesseract_config}:{self.config.enable_preprocessing}"
+        return (
+            f"{digest}:{dpi}:{self.tesseract_config}:{self.config.enable_preprocessing}"
+        )
 
     def process_image_with_details(
         self,

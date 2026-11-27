@@ -40,7 +40,9 @@ class PageContent:
     is_scanned: bool
     has_images: bool
     alnum_char_count: int = 0
-    extraction_method: str = "native_text"  # native_text | ocr_required | ocr | empty | error
+    extraction_method: str = (
+        "native_text"  # native_text | ocr_required | ocr | empty | error
+    )
     needs_ocr: bool = False
     is_blank: bool = False
     error: Optional[str] = None
