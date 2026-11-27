@@ -1,4 +1,4 @@
-"""Underwriting Results & Document Review Views.
+"""Underwriting Results & Document Verification Views.
 
 Supports both live execution bundles (in session state) and persisted historical
 records from SQLite (`underwriting_runs.details_snapshot`), preserving unavailable
@@ -8,9 +8,8 @@ statuses honestly and masking sensitive personal/account identifiers.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-import pandas as pd
 import streamlit as st
 
 from app.database.audit import get_applicant_run_history, get_audit_run_by_id
@@ -24,7 +23,10 @@ from app.ui.components import (
     format_fraud_status_display,
     format_inr,
     format_risk_score_display,
+    render_alert_box,
+    render_banking_table,
     render_conflicts_panel,
+    render_empty_state,
     render_factor_cards,
     render_hitl_banner,
     render_human_vs_ai_summary_panel,
@@ -36,6 +38,7 @@ from app.ui.components import (
     render_status_pill,
 )
 from app.ui.services import (
+    expected_documents_for_employment,
     format_decision_label,
     get_applicant_record,
     has_physical_document_package,
@@ -49,6 +52,7 @@ from app.ui.state import (
     STATE_SELECTED_RUN_ID,
     get_live_result,
     navigate_to,
+    queue_existing_applicant_for_intake,
     store_live_result,
 )
 
@@ -324,14 +328,17 @@ def _render_run_action_header(selected_app_id: Optional[str]) -> Optional[str]:
     app_ids = [rec["applicant_id"] for rec in catalog]
 
     if not app_ids:
-        st.info("No applications available yet. Create one in New Application.")
+        render_empty_state(
+            "No Applications Available",
+            "Create a new application in the Intake Wizard before running underwriting.",
+        )
         if st.button("Go to New Application", key="results_goto_intake"):
             navigate_to("New Application")
             st.rerun()
         return None
 
     default_idx = app_ids.index(selected_app_id) if selected_app_id in app_ids else 0
-    c1, c2 = st.columns([3.2, 1.3], vertical_alignment="bottom")
+    c1, c2, c3 = st.columns([2.8, 1.1, 1.3], vertical_alignment="bottom")
     with c1:
         chosen_id = st.selectbox(
             "Selected Application",
@@ -349,7 +356,15 @@ def _render_run_action_header(selected_app_id: Optional[str]) -> Optional[str]:
             st.session_state[STATE_SELECTED_RUN_ID] = None
     with c2:
         if st.button(
-            "Run / Re-evaluate Pipeline",
+            "App Workspace",
+            key="results_back_workspace",
+            width="stretch",
+        ):
+            navigate_to("Application Details", applicant_id=chosen_id)
+            st.rerun()
+    with c3:
+        if st.button(
+            "Run / Re-evaluate",
             type="primary",
             key="btn_run_from_results",
             width="stretch",
@@ -376,11 +391,12 @@ def _render_run_action_header(selected_app_id: Optional[str]) -> Optional[str]:
 
 
 def render_underwriting_results_view() -> None:
-    """Render explainable Underwriting Results clearly separating AI output from human decision."""
+    """Render two-level Underwriting Results (Accessible Summary first, Technical Detail expandable)."""
     render_page_header(
-        "Underwriting",
+        "Processing",
         "Underwriting Results",
-        "AI decision-support outcome, primary reason codes, and clear separation from final human decisions.",
+        "Two-level decision report: executive underwriting summary up front and detailed technical telemetry on demand.",
+        breadcrumbs=["Processing", "Underwriting"],
     )
 
     chosen_id = _render_run_action_header(st.session_state.get(STATE_SELECTED_APP_ID))
@@ -409,27 +425,33 @@ def render_underwriting_results_view() -> None:
 
     ctx = _normalize_view_context(chosen_id, selected_run_id)
     if ctx is None:
-        st.info(
-            f"No underwriting run is recorded yet for `{chosen_id}`. "
-            "Use **Run / Re-evaluate Pipeline** above or submit an application in **New Application**."
+        render_empty_state(
+            "No Underwriting Run Recorded",
+            f"Run the pipeline above for {chosen_id} or submit an application with documents in New Application.",
         )
         return
 
     render_hitl_banner()
+    if ctx["pipeline_status"] == "FAILED":
+        render_alert_box(
+            "Pipeline Execution Interrupted",
+            "This automated evaluation failed and never implies a valid approval or numeric zero risk score. Human triage is mandatory.",
+            variant="danger",
+        )
 
     # ------------------------------------------------------------------
-    # 1. Decision Separation: AI Recommendation vs Final Human Decision
+    # LEVEL 1 — EXECUTIVE SUMMARY
     # ------------------------------------------------------------------
     case_summary = get_case_review_summary(chosen_id, run_id=ctx.get("run_id"))
     sep_head, sep_cta = st.columns([3.2, 1.3], vertical_alignment="bottom")
     with sep_head:
         render_section_heading(
-            "Decision Separation (AI Recommendation vs Final Human Decision)",
-            "Automated outputs never serve as final lending approval without authorized human sign-off",
+            "Summary Level — Recommendation & Human Separation",
+            "Clear separation between advisory AI verdicts and final human underwriter decisions",
         )
     with sep_cta:
         if st.button(
-            "Open in Review Queue",
+            "Open Human Review",
             key=f"results_goto_review_queue_{chosen_id}",
             width="stretch",
         ):
@@ -442,9 +464,6 @@ def render_underwriting_results_view() -> None:
 
     render_human_vs_ai_summary_panel(case_summary)
 
-    # ------------------------------------------------------------------
-    # 2. Primary Decision, Reasons & Key Domain Indicators First
-    # ------------------------------------------------------------------
     app_rec = get_applicant_record(chosen_id) or {}
     render_kv_grid(
         [
@@ -456,10 +475,6 @@ def render_underwriting_results_view() -> None:
         columns=4,
     )
 
-    render_section_heading(
-        "AI Underwriting Recommendation & Domain Summary",
-        "Primary domain verdicts alongside deterministic evidence-agreement confidence (not a default probability)",
-    )
     score_str = format_risk_score_display(ctx.get("risk_score"))
     fraud_disp = format_fraud_status_display(ctx.get("fraud_status"))
     anom_data = ctx.get("anomaly") or {}
@@ -505,88 +520,113 @@ def render_underwriting_results_view() -> None:
             delta_arrow="off",
         )
 
-    # Primary Narrative & Reason Codes Immediately Visible
     with st.container(border=True):
-        render_section_heading("Decision Rationale & Key Safeguards")
-        st.info(f"**Executive Summary:** {ctx['summary'] or 'No summary recorded.'}")
+        render_section_heading(
+            "Key Findings & Recommendation Rationale",
+            "Non-technical summary of primary decision drivers and human review triggers",
+        )
+        render_alert_box(
+            "Executive Summary",
+            ctx["summary"] or "No summary recorded.",
+            variant="info",
+        )
 
         if ctx.get("review_reasons"):
-            st.markdown("**Manual Review Triggers:**")
+            st.markdown("**Why Human Review Is Required**")
             for msg in ctx["review_reasons"]:
                 st.warning(msg)
 
         if ctx.get("reasons"):
-            st.markdown("**Primary Decision Reason Codes:**")
-            for idx, r in enumerate(ctx["reasons"], 1):
-                st.markdown(
-                    f"{idx}. **`[{r.get('code')}]` ({r.get('category')} · {r.get('severity')})** — "
-                    f"{r.get('description')}  \n"
-                    f"<span style='font-size:0.8rem;color:#64748B;'>Source: {r.get('source_agent')} · "
-                    f"Evidence: {mask_extracted_value('evidence', r.get('evidence')) if r.get('evidence') else 'N/A'}</span>",
-                    unsafe_allow_html=True,
-                )
+            st.markdown("**Primary Reason Codes**")
+            render_banking_table(
+                headers=["Code", "Category", "Severity", "Source", "Summary"],
+                rows=[
+                    [
+                        str(r.get("code", "")),
+                        str(r.get("category", "")),
+                        str(r.get("severity", "")),
+                        str(r.get("source_agent", "")),
+                        str(r.get("description", "")),
+                    ]
+                    for r in ctx["reasons"]
+                ],
+                pill_columns={2},
+            )
 
-        render_conflicts_panel(ctx.get("consistency_conflicts") or [])
         render_factor_cards(
             positive_factors=ctx.get("positive_factors") or [],
             negative_factors=ctx.get("negative_factors") or [],
             blocking_factors=ctx.get("blocking_factors") or [],
         )
 
-    # Audit status quiet confirmation strip
     if ctx["audit_persisted"] and ctx.get("run_id"):
         st.caption(
-            f"Audit Record Verified: `{ctx['run_id']}` · Pipeline Status `{ctx['pipeline_status']}` · Latency {ctx['duration_ms']:.1f} ms"
+            f"Audit Record Verified: `{ctx['run_id']}` · Pipeline `{ctx['pipeline_status']}` · Latency {ctx['duration_ms']:.1f} ms"
         )
     elif ctx.get("run_id"):
         st.caption(
-            f"Historical Run `{ctx['run_id']}` · Pipeline Status `{ctx['pipeline_status']}`"
+            f"Historical Run `{ctx['run_id']}` · Pipeline `{ctx['pipeline_status']}`"
         )
     else:
         st.warning(
-            f"Audit persistence unavailable for this run ({ctx.get('audit_error') or 'not persisted'})."
+            f"Audit persistence unavailable ({ctx.get('audit_error') or 'not persisted'})."
         )
 
     # ------------------------------------------------------------------
-    # 3. Expandable Detailed Evidence & Technical Agent Telemetry
+    # LEVEL 2 — DETAILED TECHNICAL ANALYSIS
     # ------------------------------------------------------------------
     with st.expander(
-        "Detailed Domain Breakdown & Technical Agent Telemetry", expanded=False
+        "Detailed Analysis — Agent Outputs, Feature Explanations, Consistency & Execution Telemetry",
+        expanded=False,
     ):
-        if ctx.get("validation_warnings"):
-            st.markdown("**Input Validation Warnings**")
-            for w in ctx["validation_warnings"]:
-                st.write(f"- {w}")
-
-        tab_elig, tab_risk, tab_fraud, tab_doc, tab_agents = st.tabs(
+        tab_elig, tab_risk, tab_fraud, tab_cons, tab_agents = st.tabs(
             [
-                "Eligibility",
-                "Risk Assessment",
-                "Fraud Assessment",
-                "Document Verification",
-                "Agent Telemetry",
+                "Eligibility Rules",
+                "Credit Risk & Features",
+                "Fraud & Anomaly Flags",
+                "Consistency Checks",
+                "Execution Telemetry",
             ]
         )
 
         with tab_elig:
             elig = ctx.get("eligibility")
             if elig:
-                st.markdown(
-                    f"**Status:** `{elig['status']}` | **Policy:** `{elig.get('policy_version', 'N/A')}`"
-                )
                 dti = elig.get("dti_ratio")
-                dti_txt = f"{dti:.1f}%" if dti is not None else "N/A"
-                st.markdown(
-                    f"**Max Permitted Loan:** {format_inr(elig.get('max_eligible_amount'))} | **DTI Ratio:** `{dti_txt}`"
+                dti_txt = f"{dti:.1f}%" if dti is not None else "Unavailable"
+                render_kv_grid(
+                    [
+                        ("Eligibility Status", str(elig["status"])),
+                        ("Policy Version", str(elig.get("policy_version", "N/A"))),
+                        (
+                            "Max Permitted Loan",
+                            format_inr(elig.get("max_eligible_amount")),
+                        ),
+                        ("DTI Ratio", dti_txt),
+                    ],
+                    columns=4,
                 )
                 if elig.get("rule_results"):
-                    st.dataframe(
-                        pd.DataFrame(elig["rule_results"]),
-                        width="stretch",
-                        hide_index=True,
+                    render_banking_table(
+                        headers=["Rule", "Status", "Actual", "Expected", "Reason"],
+                        rows=[
+                            [
+                                str(r.get("rule_name", r.get("rule_id"))),
+                                str(r.get("status", "")),
+                                str(r.get("actual_value", "")),
+                                str(r.get("expected_value", "")),
+                                str(r.get("reason", "")),
+                            ]
+                            for r in elig["rule_results"]
+                        ],
+                        pill_columns={1},
                     )
             else:
-                st.error("Eligibility assessment output is UNAVAILABLE for this run.")
+                render_alert_box(
+                    "Eligibility Unavailable",
+                    "Eligibility agent output is unavailable for this run.",
+                    variant="danger",
+                )
 
         with tab_risk:
             risk = ctx.get("risk")
@@ -621,20 +661,23 @@ def render_underwriting_results_view() -> None:
                     for item in risk.get("risk_factors", []) or ["None"]:
                         st.write(f"- {item}")
                 if risk.get("feature_importance"):
-                    fi_df = pd.DataFrame(
-                        [
-                            {"Feature": k, "Importance": round(float(v), 4)}
+                    st.markdown("**Feature Contributions**")
+                    render_banking_table(
+                        headers=["Feature", "Relative Importance"],
+                        rows=[
+                            [k, f"{float(v):.4f}"]
                             for k, v in sorted(
                                 risk["feature_importance"].items(),
                                 key=lambda kv: kv[1],
                                 reverse=True,
                             )
-                        ]
+                        ],
                     )
-                    st.dataframe(fi_df, width="stretch", hide_index=True)
             else:
-                st.error(
-                    "Risk assessment is UNAVAILABLE (RiskAgent failed or model failed to load)."
+                render_alert_box(
+                    "Risk Assessment Unavailable",
+                    "RiskAgent failed or model could not load. Unavailable scores never default to zero.",
+                    variant="danger",
                 )
 
         with tab_fraud:
@@ -656,94 +699,86 @@ def render_underwriting_results_view() -> None:
                 )
                 if anom.get("missing_evidence"):
                     st.info(
-                        "Unverified due to missing documents (not flagged as fraud): "
+                        "Unverified due to missing documents (not treated as fraud): "
                         + ", ".join(anom["missing_evidence"])
                     )
                 if anom.get("flags"):
-                    st.dataframe(
-                        pd.DataFrame(anom["flags"]),
-                        width="stretch",
-                        hide_index=True,
+                    render_banking_table(
+                        headers=[
+                            "Rule",
+                            "Type",
+                            "Severity",
+                            "Observed",
+                            "Expected",
+                            "Description",
+                        ],
+                        rows=[
+                            [
+                                str(f.get("rule_id", "")),
+                                str(f.get("anomaly_type", "")),
+                                str(f.get("severity", "")),
+                                str(f.get("observed_value", "")),
+                                str(f.get("expected_value", "")),
+                                str(f.get("description", "")),
+                            ]
+                            for f in anom["flags"]
+                        ],
+                        pill_columns={2},
                     )
                 else:
                     st.success(
                         "No cross-document anomalies detected among available documents."
                     )
             else:
-                st.error("Fraud / anomaly detection is UNAVAILABLE for this run.")
+                render_alert_box(
+                    "Fraud Assessment Unavailable",
+                    "FraudAnomalyAgent output is unavailable; never treated as clean.",
+                    variant="danger",
+                )
 
-        with tab_doc:
-            doc_pkg = ctx.get("document_package")
-            if doc_pkg:
-                render_kv_grid(
-                    [
-                        ("Status", str(doc_pkg.get("processing_status", "N/A"))),
-                        (
-                            "Expected Docs",
-                            str(len(doc_pkg.get("expected_documents", []))),
-                        ),
-                        (
-                            "Submitted Docs",
-                            str(len(doc_pkg.get("documents_found", []))),
-                        ),
-                        (
-                            "Missing Docs",
-                            str(len(doc_pkg.get("documents_missing", []))),
-                        ),
-                    ],
-                    columns=4,
-                )
-                if doc_pkg.get("documents_missing"):
-                    st.warning(
-                        f"**Missing Documents:** {', '.join(doc_pkg['documents_missing'])}"
-                    )
-                if doc_pkg.get("unclassified_documents"):
-                    st.error(
-                        f"**Unclassified Documents:** {', '.join(doc_pkg['unclassified_documents'])}"
-                    )
-                if st.button("Open Document Review", key="results_open_doc_review"):
-                    navigate_to(
-                        "Document Review",
-                        applicant_id=chosen_id,
-                        run_id=ctx.get("run_id"),
-                    )
-                    st.rerun()
-            else:
-                st.warning(
-                    "No detailed document verification snapshot is available for this record."
-                )
+        with tab_cons:
+            render_conflicts_panel(ctx.get("consistency_conflicts") or [])
+            if ctx.get("validation_warnings"):
+                st.markdown("**Input Validation Warnings**")
+                for w in ctx["validation_warnings"]:
+                    st.write(f"- {w}")
 
         with tab_agents:
             exec_details = ctx.get("agent_execution_details") or {}
             if exec_details:
-                rows = [
-                    {
-                        "Agent": name,
-                        "Status": det.get("status"),
-                        "Output Available": det.get("output_available"),
-                        "Latency (ms)": det.get("duration_ms"),
-                        "Warnings": "; ".join(det.get("warnings", [])) or "None",
-                        "Error": det.get("error") or "None",
-                    }
-                    for name, det in sorted(exec_details.items())
-                ]
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                render_banking_table(
+                    headers=["Agent", "Status", "Output", "Latency (ms)", "Error"],
+                    rows=[
+                        [
+                            name,
+                            str(det.get("status", "")),
+                            "Available" if det.get("output_available") else "Missing",
+                            str(det.get("duration_ms", "—")),
+                            str(det.get("error") or "None"),
+                        ]
+                        for name, det in sorted(exec_details.items())
+                    ],
+                    pill_columns={1},
+                )
             elif ctx.get("agent_statuses"):
-                rows = [
-                    {"Agent": k, "Status": v}
-                    for k, v in sorted(ctx["agent_statuses"].items())
-                ]
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                render_banking_table(
+                    headers=["Agent", "Status"],
+                    rows=[
+                        [k, str(v)] for k, v in sorted(ctx["agent_statuses"].items())
+                    ],
+                    pill_columns={1},
+                )
             else:
                 st.caption("No agent execution telemetry recorded.")
 
 
 def render_document_review_view() -> None:
-    """Render Document Review page highlighting verification states with technical details secondary."""
+    """Render Document Verification as an evidence-review workspace with collapsible technical OCR."""
     render_page_header(
-        "Underwriting",
-        "Document Review",
-        "Document classification, field completeness, validation status, and masked extracted evidence.",
+        "Processing",
+        "Document Verification",
+        "Evidence-review workspace showing required checklist, verified fields, missing paperwork, and conflicts.",
+        breadcrumbs=["Processing", "Document Verification"],
     )
 
     chosen_id = st.session_state.get(STATE_SELECTED_APP_ID)
@@ -753,18 +788,31 @@ def render_document_review_view() -> None:
     app_ids = [rec["applicant_id"] for rec in catalog]
     if app_ids:
         idx = app_ids.index(chosen_id) if chosen_id in app_ids else 0
-        chosen_id = st.selectbox(
-            "Application Document Package",
-            options=app_ids,
-            index=idx,
-            format_func=lambda aid: next(
-                f"{r['applicant_id']} — {r.get('name', 'N/A')} ({r.get('source', 'synthetic')})"
-                for r in catalog
-                if r["applicant_id"] == aid
-            ),
-            key="doc_review_app_selector",
-        )
-        st.session_state[STATE_SELECTED_APP_ID] = chosen_id
+        c_sel, c_ws, c_up = st.columns([2.8, 1.1, 1.1], vertical_alignment="bottom")
+        with c_sel:
+            chosen_id = st.selectbox(
+                "Application Document Package",
+                options=app_ids,
+                index=idx,
+                format_func=lambda aid: next(
+                    f"{r['applicant_id']} — {r.get('name', 'N/A')} ({r.get('source', 'synthetic')})"
+                    for r in catalog
+                    if r["applicant_id"] == aid
+                ),
+                key="doc_review_app_selector",
+            )
+            st.session_state[STATE_SELECTED_APP_ID] = chosen_id
+        with c_ws:
+            if st.button("App Workspace", key="docs_back_ws", width="stretch"):
+                navigate_to("Application Details", applicant_id=chosen_id)
+                st.rerun()
+        with c_up:
+            if st.button("Upload Docs", key="docs_goto_upload", width="stretch"):
+                rec = get_applicant_record(chosen_id)
+                if rec:
+                    queue_existing_applicant_for_intake(rec)
+                navigate_to("New Application", applicant_id=chosen_id)
+                st.rerun()
 
     ctx = _normalize_view_context(chosen_id, selected_run_id)
     doc_pkg = ctx.get("document_package") if ctx else None
@@ -830,159 +878,187 @@ def render_document_review_view() -> None:
                     for d in latest_pkg.documents_found
                 ],
             }
-            st.info("Showing staged pre-submission document extraction preview.")
+            st.info("Showing staged pre-submission document verification preview.")
 
     if not doc_pkg:
-        st.info(
-            "No processed document package found for the selected application. "
-            "Upload documents in **New Application** or run the pipeline from **Underwriting Results**."
+        render_empty_state(
+            "No Document Package Processed Yet",
+            "Upload supporting PDFs via the Intake Wizard or evaluate this case in Underwriting Results.",
         )
         return
 
     render_kpi_row(
         [
             {
-                "label": "Intake Status",
+                "label": "Verification Status",
                 "value": format_compact_status(doc_pkg.get("processing_status")),
+                "accent": "teal" if not doc_pkg.get("documents_missing") else "amber",
             },
             {
-                "label": "Processed Docs",
+                "label": "Uploaded Docs",
                 "value": len(doc_pkg.get("documents_found", [])),
+                "accent": "indigo",
             },
             {
                 "label": "Missing Required",
                 "value": len(doc_pkg.get("documents_missing", [])),
+                "accent": "coral" if doc_pkg.get("documents_missing") else "teal",
             },
             {
                 "label": "Unclassified Docs",
                 "value": len(doc_pkg.get("unclassified_documents", [])),
-            },
-            {
-                "label": "OCR Triggered",
-                "value": "Yes" if doc_pkg.get("ocr_used") else "No",
+                "accent": (
+                    "amber" if doc_pkg.get("unclassified_documents") else "indigo"
+                ),
             },
         ]
     )
 
+    # Required Document Checklist
+    app_rec = get_applicant_record(chosen_id) or {}
+    expected_cats = doc_pkg.get(
+        "expected_documents"
+    ) or expected_documents_for_employment(
+        str(app_rec.get("employment_type", "Salaried"))
+    )
+    docs_found = doc_pkg.get("documents_found", [])
+    found_by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for d in docs_found:
+        found_by_type.setdefault(str(d.get("document_type", "unknown")), []).append(d)
+
+    with st.container(border=True):
+        render_section_heading(
+            "Required Document Checklist",
+            "Verification status across mandatory applicant document categories",
+        )
+        checklist_rows: List[List[str]] = []
+        for cat in expected_cats:
+            matched = found_by_type.get(cat, [])
+            if matched:
+                filenames = ", ".join(
+                    str(m.get("filename", "doc.pdf")) for m in matched
+                )
+                status = "Verified"
+            else:
+                filenames = "—"
+                status = "Missing"
+            checklist_rows.append([cat, "Mandatory", status, filenames])
+        render_banking_table(
+            headers=["Document Category", "Requirement", "Status", "Matched File(s)"],
+            rows=checklist_rows,
+            pill_columns={2},
+        )
+
+    # Alerts & Conflicts requiring human attention
     if doc_pkg.get("documents_missing"):
-        st.warning(
-            f"**Missing Required Documents:** {', '.join(doc_pkg['documents_missing'])}"
+        render_alert_box(
+            "Missing Required Documents",
+            ", ".join(doc_pkg["documents_missing"]),
+            variant="warning",
         )
     if doc_pkg.get("unclassified_documents"):
-        st.error(
-            f"**Unclassified Documents:** {', '.join(doc_pkg['unclassified_documents'])}"
+        render_alert_box(
+            "Unclassified Files",
+            ", ".join(doc_pkg["unclassified_documents"]),
+            variant="danger",
         )
     if doc_pkg.get("security_warnings"):
-        st.warning("**Security Warnings:** " + "; ".join(doc_pkg["security_warnings"]))
-    if doc_pkg.get("duplicate_documents"):
-        st.info(
-            f"**Duplicate Documents Detected:** {len(doc_pkg['duplicate_documents'])}"
-        )
-    if doc_pkg.get("processing_errors"):
-        st.error(
-            "**Processing / Extraction Errors:** "
-            + "; ".join(doc_pkg["processing_errors"])
+        render_alert_box(
+            "PDF Security Warnings",
+            "; ".join(doc_pkg["security_warnings"]),
+            variant="warning",
         )
     if doc_pkg.get("field_conflicts"):
-        st.error(f"**Cross-Document Field Conflicts:** {doc_pkg['field_conflicts']}")
+        render_alert_box(
+            "Conflicting Extracted Information",
+            str(doc_pkg["field_conflicts"]),
+            variant="danger",
+        )
+    if doc_pkg.get("processing_errors"):
+        render_alert_box(
+            "Extraction Warnings / Errors",
+            "; ".join(doc_pkg["processing_errors"]),
+            variant="danger",
+        )
 
-    docs_found = doc_pkg.get("documents_found", [])
     if not docs_found:
-        st.warning("Zero readable classified documents found in this package.")
+        render_empty_state(
+            "Zero Classified Documents Found",
+            "Upload missing PDF documents to verify applicant income, identity, and bank balances.",
+        )
         return
 
     render_section_heading(
-        "Submitted Documents & Field Verification",
-        "Verified, missing, invalid, and ambiguous field counts are separated clearly per document",
+        "Extracted Evidence & Field Verification",
+        "Extracted applicant fields (PII masked); technical OCR telemetry resides in expanders below",
     )
     missing_fields_map = doc_pkg.get("missing_fields", {})
     invalid_fields_map = doc_pkg.get("invalid_fields", {})
     ambiguous_fields_map = doc_pkg.get("ambiguous_fields", {})
 
     for doc in docs_found:
-        fname = doc.get("filename", doc.get("document_id", "Document"))
-        dtype = doc.get("document_type", "unknown")
+        fname = str(doc.get("filename", doc.get("document_id", "Document")))
+        dtype = str(doc.get("document_type", "unknown"))
         clf_conf = float(doc.get("classification_confidence", 0.0)) * 100.0
-        ocr_status = (
-            "OCR Used"
-            if doc.get("is_scanned") or doc.get("ocr_pages", 0) > 0
-            else "Native Digital"
-        )
         ext_map = doc.get("extracted_fields", {})
         verified_cnt = sum(
             1
             for f in ext_map.values()
             if str(f.get("validation_status", "valid")).lower() == "valid"
         )
-        unverified_cnt = len(ext_map) - verified_cnt
         doc_miss = missing_fields_map.get(fname, [])
         doc_inv = invalid_fields_map.get(fname, [])
         doc_amb = ambiguous_fields_map.get(fname, [])
 
         with st.container(border=True):
-            top_l, top_r = st.columns([3, 1.5], vertical_alignment="center")
+            top_l, top_r = st.columns([3.0, 1.4], vertical_alignment="center")
             with top_l:
                 st.markdown(
-                    f"**{fname}** &nbsp; "
-                    f"{render_status_pill(dtype, 'info')} &nbsp; "
+                    f"**{fname}** &nbsp; {render_status_pill(dtype, 'teal')} &nbsp; "
                     f"{render_status_pill(str(doc.get('classification_status', 'N/A')))}",
                     unsafe_allow_html=True,
                 )
             with top_r:
-                st.markdown(
-                    f"<div style='text-align:right;font-size:0.8rem;color:#475569;'>"
-                    f"Pages: {doc.get('page_count', 1)} ({ocr_status}) · Conf {clf_conf:.0f}%</div>",
-                    unsafe_allow_html=True,
+                st.caption(
+                    f"Verified: {verified_cnt} · Missing: {len(doc_miss)} · Invalid: {len(doc_inv)}"
                 )
 
-            render_kv_grid(
-                [
-                    ("Verified Fields", str(verified_cnt)),
-                    ("Unverified Fields", str(unverified_cnt)),
-                    ("Missing Fields", str(len(doc_miss))),
-                    (
-                        "Invalid / Ambiguous",
-                        f"{len(doc_inv)} invalid · {len(doc_amb)} ambiguous",
-                    ),
-                ],
-                columns=4,
-            )
-
             if doc_miss:
-                st.warning(f"**Missing Expected Fields:** {', '.join(doc_miss)}")
+                st.warning(f"Missing Expected Fields: {', '.join(doc_miss)}")
             if doc_inv:
-                st.error(f"**Invalid Fields:** {doc_inv}")
+                st.error(f"Invalid Fields: {doc_inv}")
             if doc_amb:
-                st.warning(f"**Ambiguous Fields:** {doc_amb}")
+                st.warning(f"Ambiguous Fields: {doc_amb}")
 
             if ext_map:
-                primary_rows = []
-                tech_rows = []
+                primary_rows: List[List[str]] = []
+                tech_rows: List[List[str]] = []
                 for field_key, fdata in ext_map.items():
                     vstat = str(fdata.get("validation_status", "valid")).lower()
                     primary_rows.append(
-                        {
-                            "Field": fdata.get("field_name", field_key),
-                            "Extracted Value (Masked)": str(fdata.get("value", "N/A")),
-                            "Validation": format_compact_status(vstat),
-                            "Page": fdata.get("page_number", 1),
-                        }
+                        [
+                            str(fdata.get("field_name", field_key)),
+                            str(fdata.get("value", "N/A")),
+                            format_compact_status(vstat),
+                            str(fdata.get("page_number", 1)),
+                        ]
                     )
                     tech_rows.append(
-                        {
-                            "Field": fdata.get("field_name", field_key),
-                            "Method": fdata.get("extraction_method", "N/A"),
-                            "Heuristic Confidence": f"{float(fdata.get('confidence', 0.0)) * 100:.1f}%",
-                            "Validation Message": fdata.get("validation_message")
-                            or "—",
-                            "Evidence Snippet (Masked)": str(fdata.get("evidence", "")),
-                        }
+                        [
+                            str(fdata.get("field_name", field_key)),
+                            str(fdata.get("extraction_method", "N/A")),
+                            f"{float(fdata.get('confidence', 0.0)) * 100:.1f}%",
+                            str(fdata.get("validation_message") or "—"),
+                            str(fdata.get("evidence", "")),
+                        ]
                     )
-                st.dataframe(
-                    pd.DataFrame(primary_rows), width="stretch", hide_index=True
+                render_banking_table(
+                    headers=["Field", "Extracted Value (Masked)", "Validation", "Page"],
+                    rows=primary_rows,
+                    pill_columns={2},
                 )
                 with st.expander(
-                    "Technical Extraction Telemetry & Evidence", expanded=False
+                    "Technical OCR & Extraction Diagnostics", expanded=False
                 ):
                     render_kv_grid(
                         [
@@ -1000,8 +1076,15 @@ def render_document_review_view() -> None:
                         ],
                         columns=4,
                     )
-                    st.dataframe(
-                        pd.DataFrame(tech_rows), width="stretch", hide_index=True
+                    render_banking_table(
+                        headers=[
+                            "Field",
+                            "Method",
+                            "Heuristic Conf",
+                            "Message",
+                            "Masked Evidence",
+                        ],
+                        rows=tech_rows,
                     )
             else:
                 st.caption("No structured fields extracted from this document.")

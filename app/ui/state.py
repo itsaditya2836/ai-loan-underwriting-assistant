@@ -1,8 +1,8 @@
 """Session-State Management Helpers for the Streamlit Underwriting Workbench.
 
-Centralizes navigation routing, grouped role-aware navigation labels, draft preservation
-across reruns, upload staging buffers, result caching keyed by applicant/run ID, and
-duplicate-submission guards.
+Centralizes navigation routing, theme state, multi-step wizard state, grouped
+role-aware navigation labels, draft preservation across reruns, upload staging
+buffers, result caching keyed by applicant/run ID, and duplicate-submission guards.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import streamlit as st
 
 NAV_PAGES: tuple[str, ...] = (
     "Dashboard",
-    "New Application",
     "Applications",
     "Application Details",
+    "New Application",
     "Document Review",
     "Underwriting Results",
     "Underwriter Review Queue",
@@ -23,19 +23,21 @@ NAV_PAGES: tuple[str, ...] = (
 )
 
 NAV_SIDEBAR_LABELS: Dict[str, str] = {
-    "Dashboard": "Overview · Dashboard",
-    "New Application": "Applications · New Application",
-    "Applications": "Applications · All Applications",
-    "Application Details": "Applications · Case Details",
-    "Document Review": "Underwriting · Document Review",
-    "Underwriting Results": "Underwriting · Results",
-    "Underwriter Review Queue": "Human Review · Review Queue",
-    "Audit History": "Records · Audit History",
+    "Dashboard": ":material/space_dashboard: Workspace · Overview",
+    "Applications": ":material/folder_open: Workspace · Applications",
+    "Application Details": ":material/work_outline: Workspace · App Workspace",
+    "New Application": ":material/edit_document: Workspace · New Intake",
+    "Document Review": ":material/fact_check: Processing · Doc Verification",
+    "Underwriting Results": ":material/analytics: Processing · Underwriting",
+    "Underwriter Review Queue": ":material/gavel: Decisions · Human Review",
+    "Audit History": ":material/history: Records · Audit Trail",
 }
 
+STATE_UI_THEME = "ui_theme"
 STATE_CURRENT_PAGE = "ui_current_page"
 STATE_SELECTED_APP_ID = "ui_selected_app_id"
 STATE_SELECTED_RUN_ID = "ui_selected_run_id"
+STATE_INTAKE_WIZARD_STEP = "ui_intake_wizard_step"
 STATE_INTAKE_DRAFT = "ui_intake_draft"
 STATE_STAGED_UPLOADS = "ui_staged_uploads"
 STATE_DOC_PREVIEW_CACHE = "ui_doc_preview_cache"
@@ -51,6 +53,7 @@ STATE_PENDING_NAV_RUN_ID = "_ui_pending_nav_run_id"
 STATE_PENDING_CLEAR_INTAKE = "_ui_pending_clear_intake"
 STATE_PENDING_GEN_APP_ID = "_ui_pending_gen_app_id"
 STATE_PENDING_LOAD_INTAKE = "_ui_pending_load_intake"
+STATE_PENDING_WIZARD_STEP = "_ui_pending_wizard_step"
 STATE_LAST_REVIEW_RECEIPT = "ui_last_review_receipt"
 STATE_AUTH_ACCESS_TOKEN = "ui_auth_access_token"
 STATE_AUTH_REFRESH_TOKEN = "ui_auth_refresh_token"
@@ -63,17 +66,17 @@ def can_role_access_page(role: Optional[Any], page: str) -> bool:
     from app.auth.permissions import Permission, check_permission
 
     if page == "Underwriter Review Queue":
-        return check_permission(role, Permission.REVIEW_VIEW_ASSIGNED) or check_permission(
-            role, Permission.REVIEW_VIEW_ALL
-        )
+        return check_permission(
+            role, Permission.REVIEW_VIEW_ASSIGNED
+        ) or check_permission(role, Permission.REVIEW_VIEW_ALL)
     if page == "New Application":
         return check_permission(role, Permission.APPLICANT_CREATE) and check_permission(
             role, Permission.UNDERWRITING_INITIATE
         )
     if page in {"Applications", "Application Details"}:
-        return check_permission(role, Permission.APPLICANT_VIEW_OWN) or check_permission(
-            role, Permission.APPLICANT_VIEW_ALL
-        )
+        return check_permission(
+            role, Permission.APPLICANT_VIEW_OWN
+        ) or check_permission(role, Permission.APPLICANT_VIEW_ALL)
     if page == "Document Review":
         return check_permission(role, Permission.DOCUMENT_VIEW)
     if page == "Underwriting Results":
@@ -86,7 +89,7 @@ def can_role_access_page(role: Optional[Any], page: str) -> bool:
 
 
 def format_sidebar_nav_option(page: str, role: Optional[Any] = None) -> str:
-    """Render compact grouped navigation labels with role-restriction hints."""
+    """Render clean grouped navigation labels with role-restriction hints."""
     base = NAV_SIDEBAR_LABELS.get(page, page)
     if not can_role_access_page(role, page):
         return f"{base} [Restricted]"
@@ -114,6 +117,9 @@ def default_intake_draft(applicant_id: str = "") -> Dict[str, Any]:
 
 def init_session_state(default_applicant_ref_fn: Optional[Any] = None) -> None:
     """Initialize all required session-state containers safely once per session."""
+    if STATE_UI_THEME not in st.session_state:
+        st.session_state[STATE_UI_THEME] = "light"
+
     if STATE_CURRENT_PAGE not in st.session_state:
         st.session_state[STATE_CURRENT_PAGE] = "Dashboard"
 
@@ -122,6 +128,9 @@ def init_session_state(default_applicant_ref_fn: Optional[Any] = None) -> None:
 
     if STATE_SELECTED_RUN_ID not in st.session_state:
         st.session_state[STATE_SELECTED_RUN_ID] = None
+
+    if STATE_INTAKE_WIZARD_STEP not in st.session_state:
+        st.session_state[STATE_INTAKE_WIZARD_STEP] = 1
 
     if STATE_INTAKE_SEED_REF not in st.session_state:
         seed = default_applicant_ref_fn() if callable(default_applicant_ref_fn) else ""
@@ -171,6 +180,11 @@ def navigate_to(
         st.session_state[STATE_PENDING_NAV_RUN_ID] = run_id
 
 
+def queue_wizard_step(step: int) -> None:
+    """Queue intake wizard step change before next rerun."""
+    st.session_state[STATE_PENDING_WIZARD_STEP] = max(1, min(4, int(step)))
+
+
 def apply_pending_state_transitions(available_app_ids: List[str]) -> None:
     """Apply queued navigation/reset transitions before Streamlit renders widgets."""
     if STATE_PENDING_NAV_PAGE in st.session_state:
@@ -191,12 +205,18 @@ def apply_pending_state_transitions(available_app_ids: List[str]) -> None:
             ):
                 st.session_state[wk] = aid
 
+    if STATE_PENDING_WIZARD_STEP in st.session_state:
+        st.session_state[STATE_INTAKE_WIZARD_STEP] = st.session_state.pop(
+            STATE_PENDING_WIZARD_STEP
+        )
+
     if STATE_PENDING_LOAD_INTAKE in st.session_state:
         draft_payload = st.session_state.pop(STATE_PENDING_LOAD_INTAKE)
         st.session_state[STATE_INTAKE_SEED_REF] = draft_payload.get("applicant_id", "")
         st.session_state[STATE_INTAKE_DRAFT] = draft_payload
         st.session_state[STATE_STAGED_UPLOADS] = []
         st.session_state[STATE_DOC_PREVIEW_CACHE] = {}
+        st.session_state[STATE_INTAKE_WIZARD_STEP] = 3
         st.session_state[STATE_UPLOAD_COUNTER] = (
             int(st.session_state.get(STATE_UPLOAD_COUNTER, 0)) + 1
         )
@@ -214,6 +234,7 @@ def apply_pending_state_transitions(available_app_ids: List[str]) -> None:
         st.session_state[STATE_INTAKE_DRAFT] = default_intake_draft(new_ref)
         st.session_state[STATE_STAGED_UPLOADS] = []
         st.session_state[STATE_DOC_PREVIEW_CACHE] = {}
+        st.session_state[STATE_INTAKE_WIZARD_STEP] = 1
         st.session_state[STATE_UPLOAD_COUNTER] = (
             int(st.session_state.get(STATE_UPLOAD_COUNTER, 0)) + 1
         )
@@ -241,7 +262,7 @@ def queue_new_applicant_ref(fresh_id: str) -> None:
 
 
 def queue_existing_applicant_for_intake(app_record: Dict[str, Any]) -> None:
-    """Queue preloading an existing applicant record cleanly into New Application intake."""
+    """Queue preloading an existing applicant record cleanly into New Application wizard."""
     draft = default_intake_draft(str(app_record.get("applicant_id", "")))
     for k in draft:
         if k in app_record:

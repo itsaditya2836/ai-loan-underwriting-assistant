@@ -499,10 +499,17 @@ def test_streamlit_apptest_full_intake_submission_and_navigation():
     )
     assert not at.exception
 
-    # Fill valid Applicant schema fields using widget keys
+    # Step 1 — Applicant Details
     at.text_input(key="intake_field_applicant_id").set_value("APP-APPTEST-101")
     at.text_input(key="intake_field_name").set_value("Priya Verma")
     at.number_input(key="intake_field_age").set_value(33)
+    at.run(timeout=20)
+    assert not at.exception
+    at.button(key="wizard_next_1").click().run(timeout=20)
+    assert not at.exception
+    assert at.session_state["ui_intake_wizard_step"] == 2
+
+    # Step 2 — Financial Information
     at.selectbox(key="intake_field_employment_type").set_value("Salaried")
     at.number_input(key="intake_field_employment_years").set_value(5.0)
     at.number_input(key="intake_field_monthly_income").set_value(95000.0)
@@ -513,8 +520,16 @@ def test_streamlit_apptest_full_intake_submission_and_navigation():
     at.number_input(key="intake_field_credit_score").set_value(755)
     at.run(timeout=20)
     assert not at.exception
+    at.button(key="wizard_next_2").click().run(timeout=20)
+    assert not at.exception
+    assert at.session_state["ui_intake_wizard_step"] == 3
 
-    # Submit application through actual button -> runs orchestrator + decision + SQLite audit
+    # Step 3 — Supporting Documents -> advance cleanly
+    at.button(key="wizard_next_3").click().run(timeout=20)
+    assert not at.exception
+    assert at.session_state["ui_intake_wizard_step"] == 4
+
+    # Step 4 — Review & Submit through actual button -> runs orchestrator + decision + SQLite audit
     at.button(key="btn_submit_underwriting").click().run(timeout=25)
     assert not at.exception
 

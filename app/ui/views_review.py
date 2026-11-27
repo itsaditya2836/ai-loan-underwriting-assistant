@@ -1,11 +1,7 @@
-"""Underwriter Review Queue & Human Decision Workbench.
+"""Human Review Queue & Single-Case Underwriting Decision Workbench.
 
-Provides:
-- Filterable queue prioritizing cases awaiting human underwriter review or triage
-- Strict separation between AI recommendation, pipeline execution, human status & decision
-- Full applicant, AI analysis, masked document evidence, and conflict inspection
-- Server-validated decision submission with Maker-Checker guards preserved intact
-- Append-only linked corrections and additional-info return-to-pending workflow
+Preserves RBAC, Maker-Checker (no self-review), Supervisor-only corrections,
+append-only audit history, and optimistic status locking intact.
 """
 
 from __future__ import annotations
@@ -13,7 +9,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
 import streamlit as st
 
 from app.review.service import (
@@ -29,7 +24,10 @@ from app.ui.components import (
     format_fraud_status_display,
     format_inr,
     format_risk_score_display,
+    render_alert_box,
+    render_banking_table,
     render_conflicts_panel,
+    render_empty_state,
     render_factor_cards,
     render_human_vs_ai_summary_panel,
     render_kpi_row,
@@ -84,7 +82,7 @@ def _render_review_receipt() -> None:
 
 
 def render_underwriter_review_queue_view() -> None:
-    """Render the Human Underwriter Review Queue & Detailed Review Workbench."""
+    """Render prioritized Human Review queue + focused single-case decision workbench."""
     if "_ui_pending_clear_review_form" in st.session_state:
         rid_clear = st.session_state.pop("_ui_pending_clear_review_form")
         for prefix in (
@@ -99,9 +97,10 @@ def render_underwriter_review_queue_view() -> None:
             st.session_state.pop(prefix, None)
 
     render_page_header(
+        "Decisions",
         "Human Review",
-        "Underwriter Review Queue",
-        "Triage cases requiring human judgment and record separate, append-only underwriting decisions.",
+        "Prioritized review queue and single-application decision workbench with Maker-Checker enforcement.",
+        breadcrumbs=["Decisions", "Human Review"],
     )
 
     auth_user = get_authenticated_ui_user()
@@ -143,14 +142,16 @@ def render_underwriter_review_queue_view() -> None:
     render_kpi_row(
         [
             {
-                "label": "Cases Requiring Action",
+                "label": "Action Required",
                 "value": action_needed_total,
                 "meta": f"{metrics['completed_ai_decisions']} completed evaluations tracked",
+                "accent": "amber",
             },
             {
-                "label": "Pending Initial Review",
+                "label": "Pending Review",
                 "value": metrics["pending_reviews"],
-                "meta": "Awaiting underwriter claim or decision",
+                "meta": "Awaiting initial claim or decision",
+                "accent": "indigo",
             },
             {
                 "label": "In Review / Follow-Up",
@@ -158,33 +159,55 @@ def render_underwriter_review_queue_view() -> None:
                 + metrics["additional_info_requested"]
                 + metrics["investigation_required"],
                 "meta": f"{metrics['additional_info_requested']} info req · {metrics['investigation_required']} investigation",
+                "accent": "teal",
             },
             {
                 "label": "Finalized Decisions",
                 "value": finalized_total,
                 "meta": f"{metrics['approved_by_underwriter']} approved · {metrics['rejected_by_underwriter']} rejected",
+                "accent": "coral" if metrics["rejected_by_underwriter"] else "teal",
             },
         ]
     )
 
-    if metrics.get("failed_pipeline_runs", 0) > 0:
-        st.caption(
-            f"Run Integrity Note: {metrics['failed_pipeline_runs']} failed pipeline execution(s) excluded from AI decision counts and surfaced for triage."
-        )
-
     if not all_queue_items:
-        st.info(
-            "No underwriting runs exist in SQLite yet. Submit an application in **New Application** "
-            "or run an evaluation in **Underwriting Results** to populate the review queue."
+        render_empty_state(
+            "Review Queue Empty",
+            "No underwriting runs exist in SQLite yet. Submit a new loan application or run underwriting first.",
         )
         return
 
-    with st.container(border=True):
-        render_section_heading("Queue Filters")
-        fc1, fc2, fc3, fc4, fc5 = st.columns(5)
-        f_app = fc1.text_input(
-            "Applicant ID / Name", value="", key="rq_filter_app"
-        ).strip()
+    # Streamlined Primary Queue Filters
+    f1, f2, f3 = st.columns([1.8, 1.4, 1.3], vertical_alignment="bottom")
+    f_app = f1.text_input(
+        "Search Applicant ID / Name", value="", key="rq_filter_app"
+    ).strip()
+    f_rev_status = f2.selectbox(
+        "Review Status Filter",
+        options=[
+            "NEEDS_HUMAN_ACTION",
+            "ALL",
+            "PENDING",
+            "IN_REVIEW",
+            "APPROVED",
+            "REJECTED",
+            "ADDITIONAL_INFO_REQUESTED",
+            "INVESTIGATION_REQUIRED",
+        ],
+        index=0,
+        key="rq_filter_rev_status",
+    )
+    with f3:
+        st.caption(
+            f"Run integrity: {metrics['failed_pipeline_runs']} failed run(s) excluded from AI counts"
+            if metrics.get("failed_pipeline_runs")
+            else "Sorted by urgency & timestamp"
+        )
+
+    with st.expander(
+        "More Queue Filters (Recommendation, Pipeline, Risk, Date)", expanded=False
+    ):
+        fc2, fc3, fc4 = st.columns(3)
         f_ai_rec = fc2.selectbox(
             "AI Recommendation",
             options=["ALL", "APPROVE", "REJECT", "MANUAL_REVIEW"],
@@ -200,22 +223,6 @@ def render_underwriter_review_queue_view() -> None:
             options=["ALL", "LOW", "MEDIUM", "HIGH", "BORDERLINE", "UNAVAILABLE"],
             key="rq_filter_risk",
         )
-        f_rev_status = fc5.selectbox(
-            "Human Review Status",
-            options=[
-                "NEEDS_HUMAN_ACTION",
-                "ALL",
-                "PENDING",
-                "IN_REVIEW",
-                "APPROVED",
-                "REJECTED",
-                "ADDITIONAL_INFO_REQUESTED",
-                "INVESTIGATION_REQUIRED",
-            ],
-            index=0,
-            key="rq_filter_rev_status",
-        )
-
         dc1, dc2, dc3 = st.columns([1.3, 1, 1.7])
         use_dates = dc1.checkbox(
             "Filter by Submission Date", value=False, key="rq_use_dates"
@@ -244,52 +251,77 @@ def render_underwriter_review_queue_view() -> None:
     )
 
     if not filtered_items:
-        st.info("No queue cases match the selected filters.")
+        render_empty_state(
+            "No Matching Queue Cases",
+            "No cases match the active review filters.",
+        )
         return
 
-    st.caption(f"Displaying {len(filtered_items)} prioritized case(s)")
-    q_rows = [
-        {
-            "ID": item["applicant_id"],
-            "Name": item["applicant_name"],
-            "AI Rec": format_compact_status(item["ai_recommendation"]),
-            "Risk": format_compact_status(item["risk_category"]),
-            "Triggers": " · ".join(
-                format_compact_status(t) for t in item["attention_triggers"]
-            )
-            or "None",
-            "Review Status": format_compact_status(item["human_review_status"]),
-            "Decision": (
-                format_compact_status(item["human_decision"])
-                if item.get("human_decision")
-                else "Pending"
-            ),
-            "Submitted": _format_utc_short(item["submission_timestamp"]),
-        }
-        for item in filtered_items
-    ]
-    st.dataframe(pd.DataFrame(q_rows), width="stretch", hide_index=True)
+    with st.container(border=True):
+        render_section_heading(
+            "Prioritized Queue",
+            f"{len(filtered_items)} case(s) matching queue view",
+        )
+        render_banking_table(
+            headers=[
+                "ID",
+                "Applicant",
+                "AI Rec",
+                "Risk",
+                "Triggers",
+                "Review Status",
+                "Human Decision",
+                "Submitted (UTC)",
+            ],
+            rows=[
+                [
+                    item["applicant_id"],
+                    item["applicant_name"],
+                    format_compact_status(item["ai_recommendation"]),
+                    format_compact_status(item["risk_category"]),
+                    " · ".join(
+                        format_compact_status(t) for t in item["attention_triggers"]
+                    )
+                    or "None",
+                    format_compact_status(item["human_review_status"]),
+                    (
+                        format_compact_status(item["human_decision"])
+                        if item.get("human_decision")
+                        else "Pending"
+                    ),
+                    _format_utc_short(item["submission_timestamp"]),
+                ]
+                for item in filtered_items
+            ],
+            pill_columns={2, 3, 5, 6},
+        )
 
-    render_section_heading(
-        "Case Workbench",
-        "Inspect dossier evidence and record append-only human underwriting actions",
-    )
-
+    # ------------------------------------------------------------------
+    # Single-Case Focus Workbench
+    # ------------------------------------------------------------------
     case_ids = [item["applicant_id"] for item in filtered_items]
     pref_id = st.session_state.get(STATE_SELECTED_APP_ID)
     default_idx = case_ids.index(pref_id) if pref_id in case_ids else 0
-    selected_case_id = st.selectbox(
-        "Select Application to Review",
-        options=case_ids,
-        index=default_idx,
-        format_func=lambda aid: next(
-            f"{it['applicant_id']} — {it['applicant_name']} "
-            f"[{format_compact_status(it['ai_recommendation'])} · {format_compact_status(it['human_review_status'])}]"
-            for it in filtered_items
-            if it["applicant_id"] == aid
-        ),
-        key="rq_selected_case_id",
-    )
+
+    sel_col, ws_col = st.columns([3.0, 1.1], vertical_alignment="bottom")
+    with sel_col:
+        selected_case_id = st.selectbox(
+            "Active Case Under Review",
+            options=case_ids,
+            index=default_idx,
+            format_func=lambda aid: next(
+                f"{it['applicant_id']} — {it['applicant_name']} "
+                f"[{format_compact_status(it['ai_recommendation'])} · {format_compact_status(it['human_review_status'])}]"
+                for it in filtered_items
+                if it["applicant_id"] == aid
+            ),
+            key="rq_selected_case_id",
+        )
+    with ws_col:
+        if st.button("Open Workspace", key="rq_open_ws", width="stretch"):
+            navigate_to("Application Details", applicant_id=selected_case_id)
+            st.rerun()
+
     selected_item = next(
         it for it in filtered_items if it["applicant_id"] == selected_case_id
     )
@@ -338,7 +370,7 @@ def render_underwriter_review_queue_view() -> None:
                 else:
                     st.error(res_claim["error"])
 
-    _render_case_inspection_tabs(selected_case_id, run_row)
+    _render_case_inspection_tabs(selected_case_id, run_row, case_summary)
 
     if cur_rev_status in {
         ReviewStatus.ADDITIONAL_INFO_REQUESTED.value,
@@ -347,11 +379,14 @@ def render_underwriter_review_queue_view() -> None:
         _render_additional_info_followup_box(selected_case_id, run_id, case_summary)
 
     _render_human_decision_form(selected_case_id, run_id, case_summary)
-    _render_case_review_timeline(case_summary)
 
 
-def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -> None:
-    """Render Applicant Profile, AI Analysis, and Masked Evidence tabs cleanly."""
+def _render_case_inspection_tabs(
+    application_id: str,
+    run_row: Dict[str, Any],
+    case_summary: Dict[str, Any],
+) -> None:
+    """Render Applicant Summary, AI Findings, Evidence, and Previous Review Activity tabs."""
     snap = run_row.get("details_snapshot") or {}
     app_rec = get_applicant_record(application_id) or {}
     elig = snap.get("eligibility") or {}
@@ -359,11 +394,12 @@ def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -
     anom = snap.get("anomaly") or {}
     doc_pkg = snap.get("document_package") or {}
 
-    t_app, t_ai, t_ev = st.tabs(
+    t_app, t_ai, t_ev, t_hist = st.tabs(
         [
-            "1. Applicant Profile & Financials",
-            "2. AI Analysis & Decision Triggers",
-            "3. Supporting Evidence & Masked Extractions",
+            "Applicant Summary",
+            "AI Findings & Conflicts",
+            "Supporting Evidence",
+            "Previous Review Activity",
         ]
     )
 
@@ -397,8 +433,10 @@ def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -
         )
 
     with t_ai:
-        st.info(
-            f"**AI Recommendation (`{run_row['recommendation']}`)** — {run_row.get('summary_narrative', 'N/A')}"
+        render_alert_box(
+            f"AI Recommendation ({run_row['recommendation']})",
+            str(run_row.get("summary_narrative", "N/A")),
+            variant="info",
         )
         render_kv_grid(
             [
@@ -424,47 +462,22 @@ def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -
             columns=4,
         )
 
-        doc_ver = snap.get("document_verification_status") or (
-            "INCOMPLETE"
-            if int(run_row.get("documents_missing_count") or 0) > 0
-            else "RECORDED"
-        )
-        st.caption(f"Document Verification Status: `{doc_ver}`")
         if doc_pkg.get("documents_missing"):
-            st.warning(
-                f"**Missing Documents:** {', '.join(doc_pkg['documents_missing'])}"
-            )
-        if doc_pkg.get("unclassified_documents"):
-            st.error(
-                f"**Unclassified Documents:** {', '.join(doc_pkg['unclassified_documents'])}"
-            )
+            st.warning(f"Missing Documents: {', '.join(doc_pkg['documents_missing'])}")
         if doc_pkg.get("invalid_fields"):
-            st.error(f"**Invalid Extracted Fields:** {doc_pkg['invalid_fields']}")
-        if doc_pkg.get("ambiguous_fields"):
-            st.warning(f"**Ambiguous Fields:** {doc_pkg['ambiguous_fields']}")
+            st.error(f"Invalid Extracted Fields: {doc_pkg['invalid_fields']}")
         if doc_pkg.get("field_conflicts"):
-            st.error(f"**Cross-Document Conflicts:** {doc_pkg['field_conflicts']}")
+            st.error(f"Cross-Document Conflicts: {doc_pkg['field_conflicts']}")
 
         render_conflicts_panel(run_row.get("consistency_conflicts") or [])
 
         if run_row.get("review_reasons"):
             with st.expander(
-                f"AI Manual Review Triggers ({len(run_row['review_reasons'])})",
+                f"Manual Review Triggers ({len(run_row['review_reasons'])})",
                 expanded=True,
             ):
                 for rr in run_row["review_reasons"]:
                     st.warning(rr)
-
-        if run_row.get("reasons"):
-            with st.expander(
-                f"Structured AI Decision Reasons ({len(run_row['reasons'])})",
-                expanded=False,
-            ):
-                for r in run_row["reasons"]:
-                    st.write(
-                        f"- **`[{r.get('code')}]` ({r.get('category')} / `{r.get('severity')}`)** "
-                        f"— {r.get('description')}"
-                    )
 
         render_factor_cards(
             positive_factors=run_row.get("positive_factors") or [],
@@ -475,32 +488,41 @@ def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -
         exec_details = snap.get("agent_execution_details") or {}
         if exec_details:
             with st.expander("Technical Agent Execution Telemetry", expanded=False):
-                st.dataframe(
-                    pd.DataFrame(
+                render_banking_table(
+                    headers=["Agent", "Status", "Output", "Latency (ms)", "Error"],
+                    rows=[
                         [
-                            {
-                                "Agent": k,
-                                "Status": v.get("status"),
-                                "Output Available": v.get("output_available"),
-                                "Latency (ms)": v.get("duration_ms"),
-                                "Error": v.get("error") or "None",
-                            }
-                            for k, v in sorted(exec_details.items())
+                            k,
+                            str(v.get("status", "")),
+                            "Available" if v.get("output_available") else "Missing",
+                            str(v.get("duration_ms", "—")),
+                            str(v.get("error") or "None"),
                         ]
-                    ),
-                    width="stretch",
-                    hide_index=True,
+                        for k, v in sorted(exec_details.items())
+                    ],
+                    pill_columns={1},
                 )
 
     with t_ev:
         if elig.get("rule_results"):
             st.markdown("**Eligibility Policy Rule Provenance**")
-            st.dataframe(
-                pd.DataFrame(elig["rule_results"]), width="stretch", hide_index=True
+            render_banking_table(
+                headers=["Rule", "Status", "Actual", "Expected", "Reason"],
+                rows=[
+                    [
+                        str(r.get("rule_name", r.get("rule_id"))),
+                        str(r.get("status", "")),
+                        str(r.get("actual_value", "")),
+                        str(r.get("expected_value", "")),
+                        str(r.get("reason", "")),
+                    ]
+                    for r in elig["rule_results"]
+                ],
+                pill_columns={1},
             )
 
         if risk:
-            st.markdown("**Credit Risk Contributing Factors**")
+            st.markdown("**Credit Risk Drivers**")
             c_r1, c_r2 = st.columns(2)
             c_r1.write(
                 "**Protective:** "
@@ -513,33 +535,94 @@ def _render_case_inspection_tabs(application_id: str, run_row: Dict[str, Any]) -
 
         if anom.get("flags"):
             st.markdown("**Cross-Document Anomaly Flags (Privacy-Masked)**")
-            st.dataframe(pd.DataFrame(anom["flags"]), width="stretch", hide_index=True)
+            render_banking_table(
+                headers=[
+                    "Rule",
+                    "Type",
+                    "Severity",
+                    "Observed",
+                    "Expected",
+                    "Description",
+                ],
+                rows=[
+                    [
+                        str(f.get("rule_id", "")),
+                        str(f.get("anomaly_type", "")),
+                        str(f.get("severity", "")),
+                        str(f.get("observed_value", "")),
+                        str(f.get("expected_value", "")),
+                        str(f.get("description", "")),
+                    ]
+                    for f in anom["flags"]
+                ],
+                pill_columns={2},
+            )
 
         docs = doc_pkg.get("documents_found") or []
         if docs:
             st.markdown("**Extracted Document Evidence (Masked)**")
-            ev_rows: List[Dict[str, Any]] = []
+            ev_rows: List[List[str]] = []
             for d in docs:
                 for fn, ef in (d.get("extracted_fields") or {}).items():
                     ev_rows.append(
-                        {
-                            "Document": d.get("filename"),
-                            "Category": d.get("document_type"),
-                            "Field": fn,
-                            "Value (Masked)": mask_extracted_value(
+                        [
+                            str(d.get("filename", "")),
+                            str(d.get("document_type", "")),
+                            str(fn),
+                            mask_extracted_value(
                                 fn, ef.get("value"), ef.get("masked_value")
                             ),
-                            "Validation": ef.get("validation_status"),
-                            "Page": ef.get("page_number"),
-                            "Evidence (Masked)": mask_extracted_value(
-                                "evidence", ef.get("evidence")
-                            ),
-                        }
+                            str(ef.get("validation_status", "")),
+                            str(ef.get("page_number", 1)),
+                        ]
                     )
             if ev_rows:
-                st.dataframe(pd.DataFrame(ev_rows), width="stretch", hide_index=True)
+                render_banking_table(
+                    headers=[
+                        "Document",
+                        "Category",
+                        "Field",
+                        "Value (Masked)",
+                        "Validation",
+                        "Page",
+                    ],
+                    rows=ev_rows,
+                    pill_columns={4},
+                )
         else:
             st.caption("No processed document artifacts recorded for this run.")
+
+    with t_hist:
+        history = case_summary.get("application_review_history") or []
+        render_banking_table(
+            headers=[
+                "Review ID",
+                "Timestamp (UTC)",
+                "AI Rec",
+                "Transition",
+                "Human Decision",
+                "Reviewer",
+                "Reason",
+            ],
+            rows=[
+                [
+                    ev["review_id"],
+                    _format_utc_short(ev["review_timestamp"]),
+                    format_compact_status(ev["original_ai_recommendation"]),
+                    f"{format_compact_status(ev['previous_review_status'])} -> {format_compact_status(ev['new_review_status'])}",
+                    (
+                        format_compact_status(ev["human_decision"])
+                        if ev.get("human_decision")
+                        else "Pending"
+                    ),
+                    str(ev["reviewer_id"]),
+                    str(ev["decision_reason"]),
+                ]
+                for ev in history
+            ],
+            pill_columns={2, 4},
+            empty_message="No previous human review events recorded for this case.",
+        )
 
 
 def _render_additional_info_followup_box(
@@ -613,7 +696,7 @@ def _render_additional_info_followup_box(
                     st.error(res["error"])
         with b2:
             if st.button(
-                "Open New Application / Upload New Docs",
+                "Open New Application / Upload Docs",
                 key=f"rq_btn_upload_followup_{source_run_id}",
                 width="stretch",
             ):
@@ -639,8 +722,8 @@ def _render_human_decision_form(
 
     with st.container(border=True):
         render_section_heading(
-            "Submit Human Underwriter Decision",
-            "Appends an immutable human review event while keeping the AI recommendation unchanged",
+            "Record Human Decision",
+            "Consequential underwriting actions require explicit confirmation and preserve AI records intact",
         )
 
         auth_user = get_authenticated_ui_user()
@@ -653,23 +736,24 @@ def _render_human_decision_form(
             if (run_mc and run_mc.get("initiated_by_user_id") == auth_user.user_id) or (
                 app_mc and app_mc.get("submitted_by_user_id") == auth_user.user_id
             ):
-                st.warning(
-                    "Maker-Checker Notice: This application or evaluation run was initiated by your signed-in account. "
-                    "Another authorized underwriter or supervisor must record the decision."
+                render_alert_box(
+                    "Maker-Checker Notice",
+                    "This application or evaluation run was initiated by your signed-in account. Another authorized underwriter or supervisor must record the decision.",
+                    variant="warning",
                 )
 
         if is_terminal and latest_rev:
-            st.warning(
-                f"Decision already recorded (`{latest_rev.get('human_decision')}` · `{cur_status}`) "
-                f"by `{latest_rev.get('reviewer_id')}` (`{latest_rev.get('review_id')}`). "
-                "Supervisors may record an explicit **linked correction event** below."
+            render_alert_box(
+                "Decision Already Recorded",
+                f"Recorded '{latest_rev.get('human_decision')}' ({cur_status}) by {latest_rev.get('reviewer_id')}. Supervisors may record an explicit linked correction event below.",
+                variant="warning",
             )
 
         is_correction = False
         correction_explanation: Optional[str] = None
         if is_terminal:
             is_correction = st.checkbox(
-                "Submit as a linked decision correction (preserves prior audit event intact)",
+                "Submit as a linked decision correction (Supervisor only; preserves prior audit event)",
                 value=False,
                 key=f"rq_is_correction_{source_run_id}",
             )
@@ -742,7 +826,7 @@ def _render_human_decision_form(
         )
 
         confirmed = st.checkbox(
-            f"I confirm recording `{action_label}` for `{application_id}` (Run `{source_run_id}`). "
+            f"I confirm recording '{action_label}' for {application_id} (Run {source_run_id}). "
             "This appends an immutable audit event and leaves the AI recommendation intact.",
             value=False,
             key=f"rq_confirm_{source_run_id}",
@@ -831,39 +915,3 @@ def _render_human_decision_form(
                 st.warning(result["error"])
             else:
                 st.error(result["error"])
-
-
-def _render_case_review_timeline(case_summary: Dict[str, Any]) -> None:
-    """Display immutable append-only review events for this run and applicant."""
-    render_section_heading("Case Review Audit Timeline")
-    history = case_summary.get("application_review_history") or []
-    if not history:
-        st.caption(
-            "No human review events have been recorded yet for this application."
-        )
-        return
-
-    rows = [
-        {
-            "Review ID": ev["review_id"],
-            "Timestamp (UTC)": _format_utc_short(ev["review_timestamp"]),
-            "Source Run": ev["source_run_id"],
-            "AI Rec": format_compact_status(ev["original_ai_recommendation"]),
-            "Transition": f"{ev['previous_review_status']} -> {ev['new_review_status']}",
-            "Human Decision": (
-                format_compact_status(ev["human_decision"])
-                if ev.get("human_decision")
-                else "Not yet recorded"
-            ),
-            "Reviewer ID": ev["reviewer_id"],
-            "Reviewer Role": ev.get("reviewer_role") or "Attribution Only",
-            "Reason": ev["decision_reason"],
-            "Correction": (
-                f"Yes ({ev.get('parent_review_id')})"
-                if ev.get("is_correction")
-                else "No"
-            ),
-        }
-        for ev in history
-    ]
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

@@ -1,7 +1,7 @@
 """Streamlit Underwriting Dashboard & Application Controller.
 
-Coordinates the multi-page fintech interface while preserving backwards-compatible
-module exports consumed by `app/main.py` and test suites.
+Coordinates the multi-page fintech interface, theme switching (Light/Dark),
+role-aware sidebar navigation, and backwards-compatible exports.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-import pandas as pd
 import streamlit as st
 
 from app.agents.decision_agent import DecisionReasoningAgent
@@ -28,6 +27,8 @@ from app.ui.components import (
     apply_fintech_styles,
     format_eligibility_metrics_summary,
     format_inr,
+    get_ui_theme,
+    render_banking_table,
     render_page_header,
     render_section_heading,
     render_status_pill,
@@ -47,11 +48,14 @@ from app.ui.state import (
     STATE_AUTH_REFRESH_TOKEN,
     STATE_CURRENT_PAGE,
     STATE_SELECTED_APP_ID,
+    STATE_UI_THEME,
     apply_pending_state_transitions,
+    can_role_access_page,
     format_sidebar_nav_option,
     get_authenticated_ui_user,
     init_session_state,
     logout_ui_session,
+    navigate_to,
 )
 from app.ui.views_intake import render_new_application_view
 from app.ui.views_portfolio import (
@@ -126,6 +130,12 @@ def _on_sidebar_app_change() -> None:
         st.session_state["ui_selected_run_id"] = None
 
 
+def _on_theme_toggle() -> None:
+    """Persist Light/Dark theme choice cleanly across reruns."""
+    is_dark = bool(st.session_state.get("ui_theme_dark_toggle", False))
+    st.session_state[STATE_UI_THEME] = "dark" if is_dark else "light"
+
+
 def configure_page() -> None:
     """Configure Streamlit page metadata once at the application entry point."""
     st.set_page_config(
@@ -136,20 +146,34 @@ def configure_page() -> None:
 
 
 def _render_sidebar_brand() -> None:
-    """Render concise institutional application identity at top of sidebar."""
+    """Render compact banking brand mark at top of sidebar."""
     st.markdown(
         """
         <div class="banking-brand">
-            <div class="banking-brand-title">Loan Underwriting</div>
-            <div class="banking-brand-sub">Credit Operations & Audit Workbench</div>
+            <div class="banking-brand-mark">LU</div>
+            <div>
+                <div class="banking-brand-title">Loan Underwriting</div>
+                <div class="banking-brand-sub">Credit Operations Platform</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def _render_sidebar_theme_toggle() -> None:
+    """Render Light/Dark theme switch cleanly inside sidebar preferences."""
+    current = get_ui_theme()
+    st.toggle(
+        "Dark theme",
+        value=(current == "dark"),
+        key="ui_theme_dark_toggle",
+        on_change=_on_theme_toggle,
+    )
+
+
 def _render_sidebar_auth_widget() -> Optional[Any]:
-    """Render RBAC session sign-in / signed-in user block visually separate from navigation."""
+    """Render compact RBAC session sign-in / signed-in card separately from navigation."""
     auth_user = get_authenticated_ui_user()
     settings = get_settings()
     auth_enforced = settings.is_streamlit_auth_enforced()
@@ -157,7 +181,7 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
     with st.sidebar:
         _render_sidebar_brand()
         st.markdown(
-            '<div class="banking-sidebar-section">Session & Identity</div>',
+            '<div class="banking-sidebar-section">Session & Role</div>',
             unsafe_allow_html=True,
         )
         if auth_user is not None:
@@ -173,7 +197,12 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("Sign Out", key="ui_btn_sign_out", width="stretch"):
+            if st.button(
+                "Sign Out",
+                key="ui_btn_sign_out",
+                icon=":material/logout:",
+                width="stretch",
+            ):
                 logout_ui_session()
                 st.rerun()
         else:
@@ -206,55 +235,69 @@ def _render_sidebar_auth_widget() -> Optional[Any]:
                         st.rerun()
                     except AuthenticationError as exc:
                         st.error(str(exc))
-        st.markdown("---")
     return auth_user
 
 
 def _render_unauthenticated_landing() -> None:
     """Render clean enterprise sign-in gate when strict authentication is enforced."""
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown(
+            '<div class="banking-sidebar-section">Appearance</div>',
+            unsafe_allow_html=True,
+        )
+        _render_sidebar_theme_toggle()
+
     render_page_header(
         "Access Control",
         "AI Loan Underwriting Assistant",
-        "Authenticated workspace for credit intake, multi-agent evaluation, and human review.",
+        "Sign in to access loan origination, multi-agent underwriting, and audit workflows.",
+        breadcrumbs=["Platform", "Sign In"],
     )
     st.info(
         "Authentication is required (`APP_ENV=production` or `STREAMLIT_AUTH_REQUIRED=true`). "
-        "Please sign in using the sidebar Session & Identity panel."
+        "Please sign in using the sidebar Session & Role panel."
     )
-    with st.container(border=True):
-        render_section_heading(
-            "Role-Based Access Matrix",
-            "Server-verified JWT sessions enforce separation of duties across origination and review",
-        )
-        role_rows = [
-            {
-                "Role": "LOAN_OFFICER",
-                "Workspace Access": "Dashboard, New Application, Applications, Case Details, Document Review, Results, Own Audit",
-                "Restricted Actions": "Underwriter Review Queue, decision corrections, user admin",
-            },
-            {
-                "Role": "UNDERWRITER",
-                "Workspace Access": "Dashboard, Applications, Case Details, Document Review, Results, Underwriter Review Queue",
-                "Restricted Actions": "Creating applications, reviewing own cases (Maker-Checker), post-decision corrections",
-            },
-            {
-                "Role": "SUPERVISOR",
-                "Workspace Access": "All operational views, full Audit History, linked post-decision corrections",
-                "Restricted Actions": "Creating applications, reviewing own cases, user account management",
-            },
-            {
-                "Role": "ADMINISTRATOR",
-                "Workspace Access": "Full workbench visibility, FastAPI /api/v1 user admin & unlock operations",
-                "Restricted Actions": "Reviewing applications submitted or evaluated by own account",
-            },
-        ]
-        st.dataframe(pd.DataFrame(role_rows), width="stretch", hide_index=True)
+    render_section_heading(
+        "Role-Based Access Overview",
+        "Authenticated sessions enforce separation of duties across intake, evaluation, and approval",
+    )
+    render_banking_table(
+        headers=["Role", "Permitted Workspaces", "Restricted Controls"],
+        rows=[
+            [
+                "LOAN_OFFICER",
+                "Overview, New Intake, Applications, App Workspace, Document Verification, Underwriting, Own Audit",
+                "Human Review decisions, corrections, user admin",
+            ],
+            [
+                "UNDERWRITER",
+                "Overview, Applications, App Workspace, Document Verification, Underwriting, Human Review",
+                "New application intake, Maker-Checker self-reviews, corrections",
+            ],
+            [
+                "SUPERVISOR",
+                "All operational workspaces, full Audit Trail, linked post-decision corrections",
+                "New application intake, Maker-Checker self-reviews, user management",
+            ],
+            [
+                "ADMINISTRATOR",
+                "Full workbench access plus FastAPI /api/v1 user management & account unlock",
+                "Self-reviewing applications submitted or evaluated by own account",
+            ],
+        ],
+        pill_columns={0},
+    )
 
 
 def render_dashboard() -> None:
-    """Render the complete Streamlit application controller."""
-    apply_fintech_styles()
+    """Render the complete Streamlit application controller with dual-theme styling."""
     settings = get_settings()
+    init_db()
+    init_session_state(default_applicant_ref_fn=generate_applicant_reference)
+
+    # Apply chosen Light or Dark theme tokens cleanly on every rerun
+    apply_fintech_styles(get_ui_theme())
 
     # Fail closed if production configuration lacks secure secrets/CORS rules
     try:
@@ -262,9 +305,6 @@ def render_dashboard() -> None:
     except RuntimeError as exc:
         st.error(f"Startup Blocked — Security Misconfiguration: {exc}")
         return
-
-    init_db()
-    init_session_state(default_applicant_ref_fn=generate_applicant_reference)
 
     auth_user = _render_sidebar_auth_widget()
     if settings.is_streamlit_auth_enforced() and auth_user is None:
@@ -276,8 +316,20 @@ def render_dashboard() -> None:
     apply_pending_state_transitions(app_ids)
 
     active_role = auth_user.role if auth_user is not None else None
+    can_create = can_role_access_page(active_role, "New Application")
 
     with st.sidebar:
+        st.markdown("---")
+        if can_create and st.button(
+            "New Application",
+            key="sidebar_cta_new_application",
+            type="primary",
+            icon=":material/add:",
+            width="stretch",
+        ):
+            navigate_to("New Application")
+            st.rerun()
+
         st.markdown(
             '<div class="banking-sidebar-section">Navigation</div>',
             unsafe_allow_html=True,
@@ -297,7 +349,7 @@ def render_dashboard() -> None:
 
         st.markdown("---")
         st.markdown(
-            '<div class="banking-sidebar-section">Active Application Context</div>',
+            '<div class="banking-sidebar-section">Active Case</div>',
             unsafe_allow_html=True,
         )
         if app_ids:
@@ -317,6 +369,7 @@ def render_dashboard() -> None:
                 ),
                 key="sidebar_app_selector",
                 on_change=_on_sidebar_app_change,
+                label_visibility="collapsed",
             )
             if chosen_id != st.session_state.get(STATE_SELECTED_APP_ID):
                 st.session_state[STATE_SELECTED_APP_ID] = chosen_id
@@ -325,7 +378,6 @@ def render_dashboard() -> None:
             if sel_rec:
                 st.caption(
                     f"{sel_rec.get('source', 'synthetic').title()} · "
-                    f"Income {format_inr(sel_rec.get('monthly_income'))} · "
                     f"Loan {format_inr(sel_rec.get('loan_amount'))}"
                 )
         else:
@@ -333,11 +385,16 @@ def render_dashboard() -> None:
 
         st.markdown("---")
         st.markdown(
+            '<div class="banking-sidebar-section">Preferences</div>',
+            unsafe_allow_html=True,
+        )
+        _render_sidebar_theme_toggle()
+
+        st.markdown(
             """
             <div class="banking-sidebar-note">
-                <strong>Advisory Governance:</strong> AI recommendations support underwriting
-                triage only. Final lending decisions remain with authorized human underwriters.
-                Workspace uses isolated synthetic records.
+                Advisory AI outputs require authorized human underwriting sign-off.
+                Workspace uses isolated synthetic cohorts.
             </div>
             """,
             unsafe_allow_html=True,
