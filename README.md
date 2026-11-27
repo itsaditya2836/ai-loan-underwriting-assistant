@@ -421,10 +421,13 @@ Stage 7 implements the `UnderwritingOrchestrator` engine and `OrchestratorAgent`
 
 ```bash
 # Run the 30-package pipeline evaluation
-python scripts/evaluate_orchestrator.py
+.venv/bin/python scripts/evaluate_orchestrator.py
 
-# Run orchestrator tests (including failure injection and determinism checks)
-pytest tests/test_orchestrator.py
+# Run full Stage 4 end-to-end reliability, determinism & safety-probe evaluation
+.venv/bin/python scripts/evaluate_end_to_end.py
+
+# Run orchestrator tests (including dependency order, validation, failure injection & determinism)
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_orchestrator.py
 ```
 
 ---
@@ -453,8 +456,9 @@ MANUAL_REVIEW
   - Operates 100% locally and deterministically using explicit policy rules without external cloud APIs, OpenAI, Gemini, LangChain, or AutoGen.
   - Consumes Stage 5 ML risk scores without retraining or altering features.
 - **Evidence Traceability & Factor Categorization**:
-  - Standardized machine-readable reason codes (`DEC-ELIG-001`, `DEC-RISK-001`, `DEC-ANOM-001`, `DEC-DOC-001`, `DEC-SYS-001`, `DEC-APP-001`).
-  - Categorizes findings into `positive_factors`, `negative_factors`, `blocking_factors`, and `supporting_evidence`.
+  - Standardized machine-readable reason codes (`DEC-ELIG-001`/`004`, `DEC-RISK-001`/`004`, `DEC-ANOM-001`, `DEC-DOC-001`, `DEC-FRAUD-001`, `DEC-CON-001`, `DEC-SYS-001`, `DEC-APP-001`).
+  - Exposes structured decision telemetry (`eligibility_status`, `risk_category`, `risk_score`, `fraud_status`, `document_verification_status`, `missing_documents`, `validation_warnings`, `material_anomalies`, `review_reasons`, `agent_statuses`, `consistency_conflicts`) alongside `positive_factors`, `negative_factors`, `blocking_factors`, and `supporting_evidence`.
+  - Fail-closed guarantees ensure missing/failed agents, invalid/conflicting documents, non-finite risk scores, or cross-agent contradictions strictly block auto-approval and require explicit human review (`MANUAL_REVIEW`).
 - **Decision Confidence Score**:
   - Bounded 0.0–100.0% evidence completeness and analytical agreement score.
   - Penalizes missing documents, borderline risk profiles, and cross-document anomalies.
@@ -532,7 +536,8 @@ Stage 9 implements a comprehensive, interactive **Streamlit Dashboard** and an i
    - Complete application history showing all historical evaluations for the selected applicant (`Run 1`, `Run 2`, etc.), demonstrating multi-run preservation.
 
 3. **📜 Audit Trail & History Screen**:
-   - Centralized compliance ledger powered by the SQLite `underwriting_runs` table.
+   - Centralized compliance ledger powered by the SQLite `underwriting_runs` table with idempotent Stage 4 schema migration (`risk_score_available`, `review_reasons_json`, `agent_statuses_json`, `consistency_conflicts_json`, `validation_warnings_json`).
+   - Safe persistence (`save_underwriting_run_safe`) distinguishes unavailable/failed agent outputs (`"UNAVAILABLE"` / `risk_score=None`) cleanly from valid `0.0` scores and isolates persistence failures without crashing underwriting workflows.
    - Interactive filtering by Recommendation, Pipeline Status, Risk Tier, and Anomaly Severity.
    - Full historical run inspector providing read-only snapshots of previous underwriting analyses.
    - Immutability: Every run receives a unique `run_id` and is never overwritten or deleted.

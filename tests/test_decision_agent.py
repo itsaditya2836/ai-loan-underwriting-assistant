@@ -577,3 +577,226 @@ def test_agent_facade_compatibility(
     # Also test passing applicant_id string directly
     decision_from_id = agent_facade.process("APP0002")
     assert decision_from_id.recommendation == DecisionOutcome.APPROVE
+
+
+# ==============================================================================
+# STAGE 4: FAIL-CLOSED SAFETY, CROSS-AGENT CONSISTENCY & EXPLAINABILITY TESTS
+# ==============================================================================
+
+
+def test_approval_blocked_when_fraud_agent_failed_or_missing(
+    decision_agent: DecisionReasoningAgent,
+):
+    """Failed or missing FraudAnomalyAgent must strictly block auto-approval."""
+    analysis = make_mock_analysis_result(
+        eligibility_status=EligibilityStatus.ELIGIBLE,
+        risk_category=RiskLevel.LOW,
+        risk_score=15.0,
+    )
+    analysis.anomaly_result = None
+    analysis.agent_statuses["FraudAnomalyAgent"].status = AgentStatus.FAILED
+    analysis.agent_statuses["FraudAnomalyAgent"].success = False
+    analysis.agent_statuses["FraudAnomalyAgent"].output_available = False
+
+    decision = decision_agent.evaluate(analysis)
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert decision.recommendation != DecisionOutcome.APPROVE
+    assert decision.human_review_required is True
+    assert decision.fraud_status == "UNAVAILABLE"
+    assert "DEC-FRAUD-001" in [r.code for r in decision.reasons]
+    assert decision.review_reasons
+
+
+def test_approval_blocked_when_risk_agent_failed_missing_or_nan(
+    decision_agent: DecisionReasoningAgent,
+):
+    """Missing, failed, or NaN risk_score must block auto-approval and mark risk UNAVAILABLE."""
+    # Case A: risk_result is None & RiskAgent FAILED
+    analysis_missing = make_mock_analysis_result(
+        eligibility_status=EligibilityStatus.ELIGIBLE,
+        anomaly_severity=AnomalySeverity.NONE,
+    )
+    analysis_missing.risk_result = None
+    analysis_missing.agent_statuses["RiskAgent"].status = AgentStatus.FAILED
+    analysis_missing.agent_statuses["RiskAgent"].success = False
+    analysis_missing.agent_statuses["RiskAgent"].output_available = False
+
+    dec_missing = decision_agent.evaluate(analysis_missing)
+    assert dec_missing.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert dec_missing.risk_score is None
+    assert dec_missing.risk_category == "UNAVAILABLE"
+    assert "DEC-RISK-004" in [r.code for r in dec_missing.reasons]
+
+    # Case B: Corrupt NaN risk_score
+    analysis_nan = make_mock_analysis_result(
+        eligibility_status=EligibilityStatus.ELIGIBLE,
+        risk_category=RiskLevel.LOW,
+        risk_score=18.0,
+    )
+    analysis_nan.risk_result.risk_score = float("nan")
+    dec_nan = decision_agent.evaluate(analysis_nan)
+    assert dec_nan.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert dec_nan.risk_score is None
+    assert "DEC-RISK-004" in [r.code for r in dec_nan.reasons]
+
+
+def test_approval_blocked_when_eligibility_agent_failed_or_missing(
+    decision_agent: DecisionReasoningAgent,
+):
+    """Missing or failed EligibilityAgent must route to MANUAL_REVIEW, never APPROVE or REJECT."""
+    analysis = make_mock_analysis_result(
+        risk_category=RiskLevel.LOW,
+        risk_score=18.0,
+        anomaly_severity=AnomalySeverity.NONE,
+    )
+    analysis.eligibility_result = None
+    analysis.agent_statuses["EligibilityAgent"].status = AgentStatus.FAILED
+    analysis.agent_statuses["EligibilityAgent"].success = False
+    analysis.agent_statuses["EligibilityAgent"].output_available = False
+
+    decision = decision_agent.evaluate(analysis)
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert decision.eligibility_status == "UNAVAILABLE"
+    assert "DEC-ELIG-004" in [r.code for r in decision.reasons]
+
+
+def test_policy_supported_rejection_safeguard(
+    decision_agent: DecisionReasoningAgent,
+):
+    """INELIGIBLE status without any supporting failed rules or reasons must NOT auto-REJECT."""
+    analysis = make_mock_analysis_result(
+        eligibility_status=EligibilityStatus.INELIGIBLE,
+        risk_category=RiskLevel.MEDIUM,
+        risk_score=40.0,
+    )
+    analysis.eligibility_result.rules_failed = []
+    analysis.eligibility_result.rule_results = []
+    analysis.eligibility_result.reasons = []
+
+    decision = decision_agent.evaluate(analysis)
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert "DEC-ELIG-004" in [r.code for r in decision.reasons]
+
+
+def test_approval_blocked_on_ambiguous_invalid_or_conflicting_documents(
+    decision_agent: DecisionReasoningAgent,
+):
+    """Invalid fields, ambiguous fields, field conflicts, or unclassified docs block approval."""
+    for bad_attr in (
+        "invalid_fields",
+        "ambiguous_fields",
+        "field_conflicts",
+        "unclassified_documents",
+    ):
+        analysis = make_mock_analysis_result(
+            eligibility_status=EligibilityStatus.ELIGIBLE,
+            risk_category=RiskLevel.LOW,
+            risk_score=20.0,
+            anomaly_severity=AnomalySeverity.NONE,
+        )
+        if bad_attr == "unclassified_documents":
+            analysis.document_result.unclassified_documents = ["unknown_scan.pdf"]
+        else:
+            setattr(
+                analysis.document_result,
+                bad_attr,
+                {"monthly_income": [{"reason": f"simulated {bad_attr}"}]},
+            )
+
+        decision = decision_agent.evaluate(analysis)
+        assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW, bad_attr
+        assert "DEC-DOC-001" in [r.code for r in decision.reasons], bad_attr
+        assert decision.document_verification_status != "VERIFIED"
+
+
+def test_cross_agent_consistency_conflicts_and_structured_explainability(
+    decision_agent: DecisionReasoningAgent,
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Verify cross-agent conflicts route to MANUAL_REVIEW and DecisionReasoningResult exposes structured fields."""
+    from app.orchestration.consistency import check_cross_agent_consistency
+    from app.schemas.applicant import Applicant, EligibilityRuleResult, ExtractedField
+
+    # 1. CONFLICT-INCOME-MISMATCH: Applicant profile vs Document extracted income
+    analysis_inc = make_mock_analysis_result(
+        application_id="APP_CON_01",
+        eligibility_status=EligibilityStatus.ELIGIBLE,
+        risk_category=RiskLevel.LOW,
+        risk_score=20.0,
+    )
+    analysis_inc.document_result.all_extracted_fields = {
+        "declared_monthly_income": ExtractedField(
+            field_name="declared_monthly_income",
+            value="40000",
+            confidence=0.95,
+            source_document="application_form",
+            validation_status="valid",
+            evidence="Application form declared monthly income: INR 40,000",
+        )
+    }
+    applicant_inc = Applicant(
+        applicant_id="APP_CON_01",
+        name="Conflict Applicant",
+        age=32,
+        employment_type="salaried",
+        employment_years=5.0,
+        monthly_income=100000.0,
+        existing_emi=0.0,
+        loan_amount=200000.0,
+        loan_tenure=24,
+        credit_score=750,
+        bank_balance=100000.0,
+    )
+    _, conflicts_inc = check_cross_agent_consistency(analysis_inc, applicant_inc)
+    assert any(
+        c["conflict_id"] == "CONFLICT-INCOME-MISMATCH" and c["severity"] == "BLOCKING"
+        for c in conflicts_inc
+    )
+    analysis_inc.consistency_conflicts = conflicts_inc
+    analysis_inc.has_unresolved_conflicts = True
+    dec_inc = decision_agent.evaluate(analysis_inc)
+    assert dec_inc.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert "DEC-CON-001" in [r.code for r in dec_inc.reasons]
+
+    # 2. CONFLICT-CREDIT-SCORE: Eligibility vs RiskAgent credit_score disagreement
+    analysis_cs = make_mock_analysis_result(application_id="APP_CON_02")
+    analysis_cs.eligibility_result.rule_results = [
+        EligibilityRuleResult(
+            rule_id="MIN_CREDIT_SCORE",
+            rule_name="Minimum Credit Score",
+            status="PASS",
+            passed=True,
+            severity="MANDATORY",
+            actual_value=740,
+            expected_value=">= 650",
+            reason="Credit score meets minimum threshold",
+        )
+    ]
+    analysis_cs.risk_result.features_used = {"credit_score": 590}
+    _, conflicts_cs = check_cross_agent_consistency(analysis_cs)
+    assert any(c["conflict_id"] == "CONFLICT-CREDIT-SCORE" for c in conflicts_cs)
+
+    # 3. CONFLICT-ELIG-DOC & CONFLICT-ID-MISMATCH
+    analysis_id = make_mock_analysis_result(
+        application_id="APP_CON_03", missing_docs=["bank_statement"]
+    )
+    analysis_id.risk_result.applicant_id = "DIFFERENT_APP"
+    _, conflicts_id = check_cross_agent_consistency(analysis_id)
+    ids_found = {c["conflict_id"] for c in conflicts_id}
+    assert "CONFLICT-ELIG-DOC" in ids_found
+    assert "CONFLICT-ID-MISMATCH" in ids_found
+
+    # 4. End-to-end explainability schema completeness on APP0006
+    real_analysis = orchestrator.process("APP0006")
+    real_decision = decision_agent.evaluate(real_analysis)
+    assert real_decision.eligibility_status == "ELIGIBLE"
+    assert real_decision.risk_category in ("LOW", "MEDIUM", "BORDERLINE", "HIGH")
+    assert isinstance(real_decision.risk_score, float)
+    assert real_decision.fraud_status == "MEDIUM"
+    assert real_decision.document_verification_status == "VERIFIED"
+    assert isinstance(real_decision.missing_documents, list)
+    assert isinstance(real_decision.validation_warnings, list)
+    assert len(real_decision.material_anomalies) >= 1
+    assert len(real_decision.review_reasons) >= 1
+    assert isinstance(real_decision.agent_statuses, dict)
+    assert isinstance(real_decision.consistency_conflicts, list)

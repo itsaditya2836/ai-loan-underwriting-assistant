@@ -186,7 +186,16 @@ Every decision includes standardized, machine-readable reason codes indexed in `
 | `DEC-ANOM-001` | `ANOMALY` | `BLOCKING` | High-severity cross-document identity or evidence inconsistency detected. |
 | `DEC-ANOM-002` | `ANOMALY` | `WARNING` | Material cross-document discrepancy detected; human verification required. |
 | `DEC-ANOM-003` | `ANOMALY` | `INFO` | No suspicious cross-document anomalies or discrepancies detected. |
+| `DEC-CON-001` | `CONSISTENCY` | `BLOCKING` | Blocking cross-agent data contradiction detected; manual reconciliation required. |
+| `DEC-ELIG-004` | `ELIGIBILITY` | `BLOCKING` | Eligibility assessment unavailable, failed, or INELIGIBLE without explicit rule evidence. |
+| `DEC-FRAUD-001` | `ANOMALY` | `BLOCKING` | Fraud/anomaly detection unavailable or failed; automated approval blocked. |
+| `DEC-RISK-004` | `RISK` | `BLOCKING` | Credit risk assessment unavailable, failed, or produced an invalid non-finite score. |
 | `DEC-APP-001` | `SYNTHESIS` | `INFO` | Application satisfies all eligibility, risk, consistency, and documentation criteria. |
+
+### Stage 4 Fail-Closed & Structured Explainability Hardening
+- **Fail-Closed Auto-Approval Blocking**: Automated `APPROVE` requires `OrchestrationStatus.SUCCESS`, zero blocking `consistency_conflicts`, valid `EligibilityResult` (`ELIGIBLE`), complete verified documentation without `invalid_fields`/`ambiguous_fields`/`field_conflicts`/`unclassified_documents`, executed `FraudAnomalyAgent` (`NONE`/`LOW`), valid finite `RiskResult` (`LOW`/`MEDIUM`), and `confidence >= min_confidence_for_approval`.
+- **Policy-Backed Rejections Only**: `EligibilityStatus.INELIGIBLE` without any failed rule or explicit reason routes safely to `MANUAL_REVIEW` (`DEC-ELIG-004`) rather than blind auto-rejection.
+- **Structured `DecisionReasoningResult` Telemetry**: Exposes `eligibility_status`, `risk_category`, `risk_score` (`Optional[float]`), `fraud_status`, `document_verification_status`, `missing_documents`, `validation_warnings`, `material_anomalies`, `review_reasons`, `agent_statuses`, and `consistency_conflicts`.
 
 ---
 

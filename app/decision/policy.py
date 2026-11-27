@@ -133,6 +133,26 @@ REASON_CODES: Dict[str, Dict[str, str]] = {
         "severity": "INFO",
         "description": "Application satisfies all eligibility, risk, consistency, and documentation criteria for approval.",
     },
+    "DEC-CON-001": {
+        "category": "SYSTEM",
+        "severity": "BLOCKING",
+        "description": "Unresolved cross-agent output contradiction requires manual review.",
+    },
+    "DEC-FRAUD-001": {
+        "category": "ANOMALY",
+        "severity": "BLOCKING",
+        "description": "Fraud and cross-document consistency verification failed or was unavailable.",
+    },
+    "DEC-RISK-004": {
+        "category": "RISK",
+        "severity": "BLOCKING",
+        "description": "Credit risk assessment failed, was unavailable, or produced an invalid output.",
+    },
+    "DEC-ELIG-004": {
+        "category": "ELIGIBILITY",
+        "severity": "BLOCKING",
+        "description": "Eligibility assessment failed or lacked valid policy-supported rules.",
+    },
 }
 
 __all__ = ["DecisionPolicy", "REASON_CODES"]

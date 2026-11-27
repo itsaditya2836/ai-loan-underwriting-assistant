@@ -5,6 +5,7 @@ from app.database.audit import (
     get_audit_runs,
     init_audit_table,
     save_underwriting_run,
+    save_underwriting_run_safe,
 )
 from app.database.db import get_database_connection, init_db
 
@@ -13,6 +14,7 @@ __all__ = [
     "init_db",
     "init_audit_table",
     "save_underwriting_run",
+    "save_underwriting_run_safe",
     "get_audit_runs",
     "get_audit_run_by_id",
     "get_applicant_run_history",

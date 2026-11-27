@@ -301,3 +301,177 @@ def test_cli_verification_entrypoint_runs_without_streamlit_config(monkeypatch):
     monkeypatch.setattr(st, "set_page_config", lambda **kwargs: calls.append(kwargs))
     app_main.run_cli_verification()
     assert calls == []
+
+
+# ==============================================================================
+# STAGE 4: SAFE AUDIT PERSISTENCE, UNAVAILABLE SCORES & SCHEMA MIGRATION TESTS
+# ==============================================================================
+
+
+def test_audit_persists_unavailable_failed_agent_state():
+    """Verify failed/missing agent states persist as UNAVAILABLE with risk_score=None cleanly."""
+    from app.database.audit import (
+        get_audit_analytics_summary,
+        get_audit_run_by_id,
+        save_underwriting_run,
+    )
+    from app.decision.decision_agent import DecisionReasoningAgent
+    from app.schemas.underwriting import (
+        AgentExecutionStatus,
+        AgentStatus,
+        OrchestrationStatus,
+        UnderwritingAnalysisResult,
+    )
+
+    failed_analysis = UnderwritingAnalysisResult(
+        application_id="APP_FAIL_01",
+        applicant_id="APP_FAIL_01",
+        orchestration_status=OrchestrationStatus.FAILED,
+        eligibility_result=None,
+        risk_result=None,
+        anomaly_result=None,
+        validation_warnings=["Income volatility warning"],
+        consistency_conflicts=[
+            {
+                "conflict_id": "CONFLICT-RISK-UNAVAILABLE",
+                "severity": "BLOCKING",
+                "description": "Risk model failed",
+            }
+        ],
+        agent_statuses={
+            "risk_agent": AgentExecutionStatus(
+                agent_name="risk_agent",
+                status=AgentStatus.FAILED,
+                success=False,
+                output_available=False,
+                error="RiskModelLoadError: simulated",
+            )
+        },
+        error_message="Simulated critical pipeline failure",
+    )
+    decision = DecisionReasoningAgent().evaluate(failed_analysis)
+    run_id = save_underwriting_run(
+        analysis=failed_analysis, decision=decision, execution_time_ms=14.5
+    )
+
+    record = get_audit_run_by_id(run_id)
+    assert record is not None
+    assert record["pipeline_status"] == "FAILED"
+    assert record["risk_score_available"] in (0, False)
+    assert record["risk_score"] is None
+    assert record["risk_category"] == "UNAVAILABLE"
+    assert record["anomaly_severity"] == "UNAVAILABLE"
+    assert record["eligibility_status"] == "UNAVAILABLE"
+    assert isinstance(record["review_reasons"], list) and record["review_reasons"]
+    assert record["agent_statuses"]["risk_agent"] == "FAILED"
+    assert (
+        record["consistency_conflicts"][0]["conflict_id"] == "CONFLICT-RISK-UNAVAILABLE"
+    )
+    assert record["validation_warnings"] == ["Income volatility warning"]
+
+    summary = get_audit_analytics_summary()
+    assert summary["failed_runs_count"] >= 1
+    assert summary["pipeline_status_distribution"]["FAILED"] >= 1
+
+
+def test_save_underwriting_run_safe_handles_db_error_and_nan_json(monkeypatch):
+    """Verify safe persistence helper swallows DB exceptions gracefully and handles NaN values cleanly."""
+    import sqlite3
+
+    from app.database.audit import get_audit_run_by_id, save_underwriting_run_safe
+    from app.decision.decision_agent import DecisionReasoningAgent
+    from app.orchestration.orchestrator import UnderwritingOrchestrator
+
+    analysis = UnderwritingOrchestrator().process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+    # Inject NaN into supporting_evidence to confirm deterministic JSON serializer sanitizes it
+    decision.supporting_evidence.append({"nan_probe": float("nan")})
+
+    ok_id, ok_err = save_underwriting_run_safe(
+        analysis=analysis, decision=decision, execution_time_ms=11.0
+    )
+    assert ok_id is not None
+    assert ok_err is None
+    loaded = get_audit_run_by_id(ok_id)
+    assert loaded is not None
+    assert loaded["supporting_evidence"][-1]["nan_probe"] is None
+
+    def broken_conn():
+        raise sqlite3.OperationalError("simulated disk I/O error")
+
+    monkeypatch.setattr("app.database.audit.get_database_connection", broken_conn)
+    fail_id, fail_err = save_underwriting_run_safe(
+        analysis=analysis, decision=decision, execution_time_ms=11.0
+    )
+    assert fail_id is None
+    assert fail_err is not None
+    assert "simulated disk I/O error" in fail_err
+
+
+def test_audit_schema_migration_adds_stage4_columns(tmp_path, monkeypatch):
+    """Verify init_audit_table idempotently migrates an older Stage 9 schema to Stage 4 columns."""
+    import sqlite3
+
+    from app.database.audit import (
+        get_audit_run_by_id,
+        init_audit_table,
+        save_underwriting_run,
+    )
+    from app.decision.decision_agent import DecisionReasoningAgent
+    from app.orchestration.orchestrator import UnderwritingOrchestrator
+
+    legacy_db = tmp_path / "legacy_stage9.db"
+    conn = sqlite3.connect(legacy_db)
+    conn.execute("""
+        CREATE TABLE underwriting_runs (
+            run_id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            pipeline_version TEXT NOT NULL,
+            decision_policy_version TEXT NOT NULL,
+            orchestrator_version TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            decision_confidence REAL NOT NULL,
+            eligibility_status TEXT NOT NULL,
+            risk_category TEXT NOT NULL,
+            risk_score REAL NOT NULL,
+            anomaly_severity TEXT NOT NULL,
+            anomaly_score REAL NOT NULL,
+            documents_found_count INTEGER NOT NULL,
+            documents_missing_count INTEGER NOT NULL,
+            human_review_required INTEGER NOT NULL,
+            pipeline_status TEXT NOT NULL,
+            execution_time_ms REAL NOT NULL,
+            reasons_json TEXT NOT NULL,
+            positive_factors_json TEXT NOT NULL,
+            negative_factors_json TEXT NOT NULL,
+            blocking_factors_json TEXT NOT NULL,
+            supporting_evidence_json TEXT NOT NULL,
+            summary_narrative TEXT NOT NULL
+        );
+        """)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{legacy_db}")
+    get_settings.cache_clear()
+    init_audit_table()
+
+    conn = sqlite3.connect(legacy_db)
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(underwriting_runs)").fetchall()
+    }
+    conn.close()
+    for expected in (
+        "risk_score_available",
+        "review_reasons_json",
+        "agent_statuses_json",
+        "consistency_conflicts_json",
+        "validation_warnings_json",
+    ):
+        assert expected in cols
+
+    analysis = UnderwritingOrchestrator().process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+    run_id = save_underwriting_run(analysis, decision, execution_time_ms=10.0)
+    assert get_audit_run_by_id(run_id) is not None

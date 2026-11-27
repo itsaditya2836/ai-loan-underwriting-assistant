@@ -10,7 +10,7 @@ Defines structured data contracts for:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -47,6 +47,25 @@ class AgentExecutionStatus(BaseModel):
     status: AgentStatus = Field(
         default=AgentStatus.PENDING, description="Execution status"
     )
+    success: Optional[bool] = Field(
+        default=None,
+        description="Standardized boolean completion state (True=SUCCESS, False=FAILED, None=pending/skipped)",
+    )
+    input_reference: Optional[str] = Field(
+        default=None, description="Traceable reference to the input supplied to agent"
+    )
+    output_available: bool = Field(
+        default=False,
+        description="Explicit indicator distinguishing present output from missing/failed output",
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings emitted during agent validation or execution",
+    )
+    evidence_references: List[str] = Field(
+        default_factory=list,
+        description="Traceable rule/document identifiers cited by the agent",
+    )
     started_at: Optional[datetime] = Field(
         default=None, description="Timestamp when agent execution started"
     )
@@ -59,6 +78,16 @@ class AgentExecutionStatus(BaseModel):
     error: Optional[str] = Field(
         default=None, description="Error message or exception details if failed"
     )
+
+    @model_validator(mode="after")
+    def sync_success_state(self) -> "AgentExecutionStatus":
+        """Ensure boolean success indicator remains aligned with AgentStatus."""
+        if self.success is None:
+            if self.status == AgentStatus.SUCCESS:
+                self.success = True
+            elif self.status == AgentStatus.FAILED:
+                self.success = False
+        return self
 
 
 class UnderwritingAnalysisResult(BaseModel):
@@ -92,6 +121,34 @@ class UnderwritingAnalysisResult(BaseModel):
     agent_statuses: Dict[str, AgentExecutionStatus] = Field(
         default_factory=dict,
         description="Telemetry and execution status mapping for each agent",
+    )
+    validation_warnings: List[str] = Field(
+        default_factory=list,
+        description="Applicant-level and pipeline data validation warnings",
+    )
+    consistency_conflicts: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Unresolved contradictions detected across analytical agent outputs",
+    )
+    has_unresolved_conflicts: bool = Field(
+        default=False,
+        description="True when material cross-agent contradictions exist",
+    )
+    authoritative_sources: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Authoritative source agent mapping by analytical domain",
+    )
+    audit_run_id: Optional[str] = Field(
+        default=None,
+        description="Unique audit run ID when persisted by orchestrator",
+    )
+    audit_persisted: bool = Field(
+        default=False,
+        description="True only when audit record persistence succeeded",
+    )
+    audit_persistence_error: Optional[str] = Field(
+        default=None,
+        description="Recorded error message if audit persistence failed",
     )
     pipeline_started_at: Optional[datetime] = Field(
         default=None, description="Timestamp when pipeline orchestration commenced"

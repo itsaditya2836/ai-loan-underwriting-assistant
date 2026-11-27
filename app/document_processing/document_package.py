@@ -63,6 +63,17 @@ def _safe_field_repr(field_name: str, val: Any) -> Any:
     return val
 
 
+def _values_equivalent(val_a: Any, val_b: Any) -> bool:
+    """Compare field values tolerating benign case and whitespace formatting differences."""
+    if val_a == val_b:
+        return True
+    if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
+        return abs(float(val_a) - float(val_b)) < 1e-6
+    norm_a = re.sub(r"\s+", " ", str(val_a).strip()).lower()
+    norm_b = re.sub(r"\s+", " ", str(val_b).strip()).lower()
+    return norm_a == norm_b
+
+
 class DocumentPackageProcessor:
     """Processes all submitted documents for an applicant package safely."""
 
@@ -382,7 +393,7 @@ class DocumentPackageProcessor:
                         aggregated_fields[fn] = ef
                     else:
                         existing_ef = aggregated_fields[fn]
-                        if existing_ef.value != ef.value:
+                        if not _values_equivalent(existing_ef.value, ef.value):
                             conflict_key = fn
                             if conflict_key not in field_conflicts:
                                 field_conflicts[conflict_key] = [

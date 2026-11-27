@@ -111,6 +111,50 @@ class DecisionReasoningResult(BaseModel):
         default="reasoning_v1",
         description="Version identifier of the decision synthesis engine",
     )
+    eligibility_status: Optional[str] = Field(
+        default=None,
+        description="Resolved Stage 4 eligibility status or UNAVAILABLE",
+    )
+    risk_category: Optional[str] = Field(
+        default=None,
+        description="Resolved Stage 5 risk category or UNAVAILABLE",
+    )
+    risk_score: Optional[float] = Field(
+        default=None,
+        description="Resolved Stage 5 numeric risk score (None if unavailable/failed)",
+    )
+    fraud_status: Optional[str] = Field(
+        default=None,
+        description="Resolved Stage 6 anomaly severity status or UNAVAILABLE",
+    )
+    document_verification_status: Optional[str] = Field(
+        default=None,
+        description="Resolved document verification outcome (VERIFIED, INCOMPLETE, FAILED, UNAVAILABLE)",
+    )
+    missing_documents: List[str] = Field(
+        default_factory=list,
+        description="Sorted list of missing required document types",
+    )
+    validation_warnings: List[str] = Field(
+        default_factory=list,
+        description="Aggregated data and document validation warnings",
+    )
+    material_anomalies: List[str] = Field(
+        default_factory=list,
+        description="Resolved material cross-document discrepancies",
+    )
+    review_reasons: List[str] = Field(
+        default_factory=list,
+        description="Explicit human-readable reasons requiring manual underwriter review",
+    )
+    agent_statuses: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-agent lifecycle state snapshot (SUCCESS, FAILED, SKIPPED, etc.)",
+    )
+    consistency_conflicts: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recorded cross-agent consistency conflicts and sources",
+    )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when the decision recommendation was generated",

@@ -14,7 +14,7 @@ from typing import List, Optional
 from app.document_processing.document_package import DocumentPackageProcessor
 from app.document_processing.extractor import DocumentExtractor
 from app.document_processing.ocr import OCRProcessor
-from app.document_processing.pdf_reader import PageContent, PDFReader
+from app.document_processing.pdf_reader import PDFReader, PageContent
 from app.document_processing.security import mask_identifier
 from app.schemas.applicant import Document, DocumentPackageResult
 from app.utils.helpers import get_logger
@@ -73,10 +73,7 @@ class DocumentIntakeAgent:
                         )
                     }
                     for idx, p in enumerate(merged_pages):
-                        if (
-                            p.page_number in ocr_results
-                            and ocr_results[p.page_number].success
-                        ):
+                        if p.page_number in ocr_results and ocr_results[p.page_number].success:
                             ocr_txt = ocr_results[p.page_number].text
                             merged_pages[idx] = replace(
                                 p,

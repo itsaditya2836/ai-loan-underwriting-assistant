@@ -78,8 +78,9 @@ app/
 ├── agents/
 │   └── orchestrator.py             # OrchestratorAgent facade
 ├── orchestration/
-│   ├── __init__.py                 # Public orchestrator exports
-│   ├── orchestrator.py             # UnderwritingOrchestrator engine
+│   ├── __init__.py                 # Lazy public orchestrator exports (cycle-safe)
+│   ├── orchestrator.py             # UnderwritingOrchestrator engine & execute_end_to_end
+│   ├── consistency.py              # Input/output validation & cross-agent consistency verifier
 │   └── errors.py                   # Orchestration exception hierarchy
 └── schemas/
     └── underwriting.py             # OrchestrationStatus, AgentStatus, UnderwritingAnalysisResult
@@ -100,24 +101,22 @@ app/
 
 ## 4. Execution Order & Data Dependencies
 
-The orchestrator enforces a clean, dependency-aware directed acyclic graph (DAG):
+The orchestrator enforces a strict, linear dependency-aware execution sequence (`process` / `run_pipeline`), with optional unified downstream decisioning and safe audit persistence via `execute_end_to_end`:
 
 ```text
 Applicant ID
      │
-     ├───► Load Applicant Profile (Step 1)
-     │          │
-     │          ├───► Risk Agent (Step 4: runs on Applicant attributes)
-     │          │
-     └───► Document Intake Agent (Step 2: processes PDFs/OCR)
-                │
-                ├───► Eligibility Agent (Step 3: verifies extracted fields against policy)
-                │
-                └───► Anomaly Agent (Step 5: cross-checks declared vs extracted evidence)
+     ▼  Step 1: Load Applicant Profile & Validate Profile Completeness/Finiteness
+     ▼  Step 2: Document Intake Agent (`DocumentIntakeAgent` — PDF/OCR/Field Extraction)
+     ▼  Step 3: Eligibility Agent (`EligibilityAgent` — 10 deterministic policy rules)
+     ▼  Step 4: Fraud & Anomaly Agent (`FraudAnomalyAgent` — missing-doc sentinel if Docs failed)
+     ▼  Step 5: Risk Assessment Agent (`RiskAgent` — Random Forest ML score + finiteness contract)
+     ▼  Step 6: Cross-Agent Consistency Verifier (`check_cross_agent_consistency`)
+     ▼  Step 7: Optional Decisioning (`DecisionReasoningAgent`) & Safe Audit (`save_underwriting_run_safe`)
 ```
 
-- **Prerequisite Ordering**: Document Intelligence must execute before Eligibility and Anomaly agents to supply structured document extractions.
-- **Graceful Fallbacks**: If document processing encounters an unexpected I/O failure, downstream agents fall back to the pre-loaded `Applicant` domain model to ensure partial analytical progress.
+- **Prerequisite Ordering**: Document Intelligence runs before Eligibility, Fraud/Anomaly, and Risk so extracted evidence and validation state are propagated uniformly and failures never halt cleanly isolateable checks.
+- **Output Contract Validation**: Each stage validates return types, finite numeric scores (`[0, 100]`), and explicit `AgentExecutionStatus` flags (`success`, `input_reference`, `output_available`, `warnings`, `evidence_references`). Corrupt or `NaN` agent outputs fail closed cleanly without overwriting sibling agent outputs.
 
 ---
 
@@ -255,16 +254,19 @@ Executive Summary:      Underwriting Pipeline Analysis for APP0016 (Status: SUCC
 ## 11. Verification Commands
 
 ```bash
-# Run orchestrator unit and failure injection tests
-pytest tests/test_orchestrator.py
+# Run orchestrator unit, contract, and failure injection tests
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_orchestrator.py
 
-# Run full project test suite (133 tests)
-pytest
+# Run full project test suite with isolated SQLite audit DB
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
 
 # Run the 30-package pipeline evaluation script
-python scripts/evaluate_orchestrator.py
+.venv/bin/python scripts/evaluate_orchestrator.py
+
+# Run full Stage 4 end-to-end pipeline, determinism, and safety-probe benchmark
+.venv/bin/python scripts/evaluate_end_to_end.py
 
 # Verify code style and formatting
-ruff check .
-black --check .
+.venv/bin/ruff check .
+.venv/bin/black --check .
 ```

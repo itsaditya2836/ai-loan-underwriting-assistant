@@ -3,7 +3,7 @@
 from app.document_processing.document_package import DocumentPackageProcessor
 from app.document_processing.extractor import ClassificationResult, DocumentExtractor
 from app.document_processing.ocr import OCRConfig, OCRPageResult, OCRProcessor
-from app.document_processing.pdf_reader import PDFDocumentInfo, PDFReader, PageContent
+from app.document_processing.pdf_reader import PageContent, PDFDocumentInfo, PDFReader
 from app.document_processing.security import (
     DocumentProcessingError,
     OCRProcessingError,

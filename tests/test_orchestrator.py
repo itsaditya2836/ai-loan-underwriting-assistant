@@ -451,3 +451,269 @@ def test_regression_disqualifying_profile_without_documents(
     assert "MIN_MONTHLY_INCOME" in res_custom.eligibility_result.rules_failed
     assert res_custom.eligibility_result.dti_ratio == 0.0
     assert "DOCUMENTS_COMPLETE" in res_custom.eligibility_result.rules_requiring_review
+
+
+# ==============================================================================
+# STAGE 4: ORCHESTRATION DEPENDENCY, CONTRACT, AND END-TO-END RELIABILITY TESTS
+# ==============================================================================
+
+
+def test_orchestrator_execution_order_dependency():
+    """Verify strict dependency order: Document -> Eligibility -> Fraud -> Risk."""
+    from app.agents.document_agent import DocumentIntakeAgent
+    from app.agents.eligibility_agent import EligibilityAgent
+    from app.agents.fraud_agent import FraudAnomalyAgent
+    from app.agents.risk_agent import RiskAgent
+
+    call_order: list[str] = []
+    real_doc = DocumentIntakeAgent()
+    real_elig = EligibilityAgent()
+    real_fraud = FraudAnomalyAgent()
+    real_risk = RiskAgent()
+
+    spy_doc = MagicMock()
+    spy_doc.process_package.side_effect = lambda *a, **kw: (
+        call_order.append("document") or real_doc.process_package(*a, **kw)
+    )
+    spy_elig = MagicMock()
+    spy_elig.evaluate.side_effect = lambda *a, **kw: (
+        call_order.append("eligibility") or real_elig.evaluate(*a, **kw)
+    )
+    spy_fraud = MagicMock()
+    spy_fraud.detect.side_effect = lambda *a, **kw: (
+        call_order.append("fraud") or real_fraud.detect(*a, **kw)
+    )
+    spy_risk = MagicMock()
+    spy_risk.assess.side_effect = lambda *a, **kw: (
+        call_order.append("risk") or real_risk.assess(*a, **kw)
+    )
+
+    orch = UnderwritingOrchestrator(
+        document_agent=spy_doc,
+        eligibility_agent=spy_elig,
+        fraud_agent=spy_fraud,
+        risk_agent=spy_risk,
+    )
+    analysis = orch.process("APP0002")
+
+    assert call_order == ["document", "eligibility", "fraud", "risk"]
+    assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+    assert analysis.authoritative_sources
+    for key in ("document_agent", "eligibility_agent", "anomaly_agent", "risk_agent"):
+        assert analysis.agent_statuses[key].success is True
+        assert analysis.agent_statuses[key].output_available is True
+
+
+def test_orchestrator_corrupt_or_invalid_agent_outputs_handled_safely():
+    """Verify invalid return types, NaN risk scores, and RiskModelLoadError are contained."""
+    from app.risk.risk_model import RiskModelLoadError
+    from app.schemas.applicant import RiskLevel, RiskResult
+
+    # Case 1: Wrong return type from RiskAgent
+    mock_risk_bad_type = MagicMock()
+    mock_risk_bad_type.assess.return_value = "CORRUPT_STRING_OUTPUT"
+    res1 = UnderwritingOrchestrator(risk_agent=mock_risk_bad_type).process("APP0002")
+    assert res1.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert res1.risk_result is None
+    assert res1.agent_statuses["risk_agent"].status == AgentStatus.FAILED
+    assert res1.agent_statuses["risk_agent"].output_available is False
+    assert any(
+        c["conflict_id"] == "CONFLICT-RISK-UNAVAILABLE"
+        for c in res1.consistency_conflicts
+    )
+
+    # Case 2: Non-finite NaN risk_score in RiskResult
+    nan_risk = RiskResult.model_construct(
+        applicant_id="APP0002",
+        risk_score=float("nan"),
+        risk_category=RiskLevel.LOW,
+        risk_level="LOW",
+        risk_factors=[],
+        protective_factors=[],
+        features_used={},
+        feature_importance={},
+        model_version="test",
+        method="ML_RANDOM_FOREST",
+    )
+    mock_risk_nan = MagicMock()
+    mock_risk_nan.assess.return_value = nan_risk
+    res2 = UnderwritingOrchestrator(risk_agent=mock_risk_nan).process("APP0002")
+    assert res2.risk_result is None
+    assert res2.agent_statuses["risk_agent"].status == AgentStatus.FAILED
+    assert res2.agent_statuses["risk_agent"].success is False
+
+    # Case 3: RiskModelLoadError raised during assessment
+    mock_risk_err = MagicMock()
+    mock_risk_err.assess.side_effect = RiskModelLoadError("Corrupt joblib artifact")
+    res3 = UnderwritingOrchestrator(risk_agent=mock_risk_err).process("APP0002")
+    assert res3.risk_result is None
+    assert res3.agent_statuses["risk_agent"].status == AgentStatus.FAILED
+    dec3 = DecisionReasoningAgent().evaluate(res3)
+    assert dec3.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert "DEC-RISK-004" in [r.code for r in dec3.reasons]
+
+    # Case 4: EligibilityAgent raises exception & FraudAnomalyAgent returns wrong type
+    mock_elig_err = MagicMock()
+    mock_elig_err.evaluate.side_effect = RuntimeError("Eligibility crash")
+    mock_fraud_bad = MagicMock()
+    mock_fraud_bad.detect.return_value = {"invalid": "dict"}
+    res4 = UnderwritingOrchestrator(
+        eligibility_agent=mock_elig_err, fraud_agent=mock_fraud_bad
+    ).process("APP0002")
+    assert res4.eligibility_result is None
+    assert res4.anomaly_result is None
+    assert res4.agent_statuses["eligibility_agent"].status == AgentStatus.FAILED
+    assert res4.agent_statuses["anomaly_agent"].status == AgentStatus.FAILED
+    conflict_ids = {c["conflict_id"] for c in res4.consistency_conflicts}
+    assert "CONFLICT-ELIG-UNAVAILABLE" in conflict_ids
+    assert "CONFLICT-FRAUD-UNAVAILABLE" in conflict_ids
+
+
+def test_orchestrator_applicant_validation_warnings_and_blank_name(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Verify applicant profile validation catches blank names cleanly and emits non-blocking warnings."""
+    from app.schemas.applicant import Applicant
+
+    # Non-blocking warning: high existing_emi > monthly_income
+    warn_applicant = Applicant(
+        applicant_id="APP_WARN_01",
+        name="Warning Profile",
+        age=28,
+        employment_type="salaried",
+        employment_years=4.0,
+        monthly_income=40000.0,
+        existing_emi=50000.0,
+        loan_amount=100000.0,
+        loan_tenure=12,
+        credit_score=740,
+        bank_balance=80000.0,
+    )
+    res_warn = orchestrator.run_pipeline(
+        warn_applicant, package_dir="data/documents/APP_DOES_NOT_EXIST"
+    )
+    assert res_warn.validation_warnings
+    assert any("existing_emi" in w for w in res_warn.validation_warnings)
+
+    # Fatal validation error: whitespace-only name fails cleanly without unhandled exception
+    bad_applicant = Applicant(
+        applicant_id="APP_BLANK_01",
+        name="   ",
+        age=30,
+        employment_type="salaried",
+        employment_years=5.0,
+        monthly_income=50000.0,
+        existing_emi=0.0,
+        loan_amount=100000.0,
+        loan_tenure=12,
+        credit_score=720,
+        bank_balance=50000.0,
+    )
+    res_bad = orchestrator.run_pipeline(
+        bad_applicant, package_dir="data/documents/APP_DOES_NOT_EXIST"
+    )
+    assert res_bad.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert res_bad.agent_statuses["eligibility_agent"].status == AgentStatus.SKIPPED
+    assert res_bad.agent_statuses["risk_agent"].status == AgentStatus.SKIPPED
+    dec_bad = DecisionReasoningAgent().evaluate(res_bad)
+    assert dec_bad.recommendation == DecisionOutcome.MANUAL_REVIEW
+
+
+def test_orchestrator_execute_end_to_end_and_audit_failure_resilience(
+    orchestrator: UnderwritingOrchestrator, tmp_path, monkeypatch
+):
+    """Verify end-to-end orchestration with isolated DB persistence and safe DB failure containment."""
+    import sqlite3
+
+    from app.database.audit import get_audit_run_by_id
+    from config.settings import get_settings
+
+    test_db = tmp_path / "e2e_orchestrator_audit.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{test_db}")
+    get_settings.cache_clear()
+
+    try:
+        analysis, decision = orchestrator.execute_end_to_end(
+            "APP0002", persist_audit=True
+        )
+        assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+        assert decision.recommendation == DecisionOutcome.APPROVE
+        assert analysis.audit_persisted is True
+        assert analysis.audit_run_id is not None
+        assert analysis.audit_persistence_error is None
+
+        persisted = get_audit_run_by_id(analysis.audit_run_id)
+        assert persisted is not None
+        assert persisted["application_id"] == "APP0002"
+        assert persisted["recommendation"] == "APPROVE"
+        assert persisted["risk_score_available"] in (1, True)
+
+        # Inject database OperationalError: underwriting results must survive safely
+        def failing_save(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr("app.database.audit.save_underwriting_run", failing_save)
+        analysis_err, decision_err = orchestrator.execute_end_to_end(
+            "APP0002", persist_audit=True
+        )
+        assert analysis_err.orchestration_status == OrchestrationStatus.SUCCESS
+        assert decision_err.recommendation == DecisionOutcome.APPROVE
+        assert analysis_err.audit_persisted is False
+        assert analysis_err.audit_run_id is None
+        assert analysis_err.audit_persistence_error is not None
+        assert "database is locked" in analysis_err.audit_persistence_error
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+def test_orchestrator_end_to_end_determinism_stage4(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Verify repeated end-to-end runs yield byte-for-byte deterministic core decision snapshots."""
+    import json
+
+    def _snapshot(app_id: str) -> str:
+        analysis, decision = orchestrator.execute_end_to_end(
+            app_id, persist_audit=False
+        )
+        payload = {
+            "orchestration_status": analysis.orchestration_status.value,
+            "eligibility": (
+                {
+                    "status": analysis.eligibility_result.status.value,
+                    "rules_passed": analysis.eligibility_result.rules_passed,
+                    "rules_failed": analysis.eligibility_result.rules_failed,
+                    "rules_requiring_review": analysis.eligibility_result.rules_requiring_review,
+                }
+                if analysis.eligibility_result
+                else None
+            ),
+            "risk": (
+                {
+                    "category": analysis.risk_result.risk_category.value,
+                    "score": analysis.risk_result.risk_score,
+                }
+                if analysis.risk_result
+                else None
+            ),
+            "anomaly": (
+                {
+                    "severity": analysis.anomaly_result.severity.value,
+                    "score": analysis.anomaly_result.anomaly_score,
+                    "flags": [f.rule_id for f in analysis.anomaly_result.flags],
+                }
+                if analysis.anomaly_result
+                else None
+            ),
+            "consistency_conflicts": analysis.consistency_conflicts,
+            "recommendation": decision.recommendation.value,
+            "confidence": decision.confidence,
+            "reason_codes": [r.code for r in decision.reasons],
+            "review_reasons": decision.review_reasons,
+            "material_anomalies": decision.material_anomalies,
+        }
+        return json.dumps(payload, sort_keys=True)
+
+    for app_id in ("APP0002", "APP0006", "APP0016"):
+        assert _snapshot(app_id) == _snapshot(app_id)
