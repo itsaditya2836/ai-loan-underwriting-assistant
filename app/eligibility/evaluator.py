@@ -250,20 +250,32 @@ class EligibilityEvaluator:
     def _evaluate_dict(self, data: Dict[str, Any]) -> EligibilityResult:
         """Evaluate raw applicant data dictionary."""
         applicant_id = str(data.get("applicant_id", "UNKNOWN"))
+        monthly_income = (
+            data.get("monthly_income")
+            if data.get("monthly_income") is not None
+            else data.get("declared_monthly_income")
+        )
+        existing_emi = (
+            data.get("existing_emi")
+            if data.get("existing_emi") is not None
+            else data.get("declared_existing_emi")
+        )
+        bank_balance = (
+            data.get("bank_balance")
+            if data.get("bank_balance") is not None
+            else data.get("declared_bank_balance")
+        )
         fields_present: Dict[str, Any] = {
             "applicant_id": applicant_id,
             "applicant_name": data.get("name") or data.get("applicant_name"),
             "age": data.get("age"),
             "employment_type": data.get("employment_type"),
-            "monthly_income": data.get("monthly_income")
-            or data.get("declared_monthly_income"),
-            "existing_emi": data.get("existing_emi")
-            or data.get("declared_existing_emi"),
+            "monthly_income": monthly_income,
+            "existing_emi": existing_emi,
             "credit_score": data.get("credit_score"),
             "loan_amount": data.get("loan_amount"),
             "loan_tenure": data.get("loan_tenure"),
-            "bank_balance": data.get("bank_balance")
-            or data.get("declared_bank_balance"),
+            "bank_balance": bank_balance,
         }
         field_records: Dict[str, ExtractedField] = {}
         for k, v in fields_present.items():
@@ -279,7 +291,10 @@ class EligibilityEvaluator:
 
         documents_found = data.get("documents_found", ["loan_application"])
         documents_missing = data.get("documents_missing", [])
-        is_complete = len(documents_missing) == 0
+        is_complete = (
+            bool(data.get("is_complete", len(documents_missing) == 0))
+            and len(documents_missing) == 0
+        )
 
         return self._run_evaluation(
             applicant_id=applicant_id,

@@ -22,6 +22,10 @@ from app.agents.document_agent import DocumentIntakeAgent
 from app.agents.eligibility_agent import EligibilityAgent
 from app.agents.fraud_agent import FraudAnomalyAgent
 from app.agents.risk_agent import RiskAgent
+from app.document_processing.document_package import (
+    SALARIED_REQUIRED_DOCS,
+    SELF_EMPLOYED_REQUIRED_DOCS,
+)
 from app.schemas.anomaly import AnomalyResult
 from app.schemas.applicant import (
     Applicant,
@@ -181,8 +185,14 @@ class UnderwritingOrchestrator:
         )
         elig_start_perf = time.perf_counter()
         try:
-            # Pass document result if present; otherwise fall back to applicant profile
-            target_for_elig = document_result if document_result else applicant
+            # Use extracted document package only when intake produced usable data;
+            # otherwise fall back to applicant profile while preserving missing-document flags.
+            if self._has_usable_document_package(document_result):
+                target_for_elig: Any = document_result
+            else:
+                target_for_elig = self._build_eligibility_fallback_target(
+                    applicant=applicant, document_result=document_result
+                )
             eligibility_result = self.eligibility_agent.evaluate(target_for_elig)
             elig_duration = (time.perf_counter() - elig_start_perf) * 1000.0
             elig_status.completed_at = datetime.now(timezone.utc)
@@ -376,6 +386,53 @@ class UnderwritingOrchestrator:
     # -----------------------------------------------------------------------
     # Helper Methods
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _has_usable_document_package(
+        document_result: Optional[DocumentPackageResult],
+    ) -> bool:
+        """Return True only when document intake succeeded with usable extracted fields."""
+        if document_result is None:
+            return False
+        if document_result.processing_status == "failed":
+            return False
+        if not document_result.documents_found:
+            return False
+        if not document_result.all_extracted_fields:
+            return False
+        return True
+
+    @staticmethod
+    def _expected_documents_for_applicant(applicant: Applicant) -> List[str]:
+        """Determine expected required document types from the applicant profile."""
+        emp = str(applicant.employment_type).lower()
+        if "self" in emp or "business" in emp:
+            return list(SELF_EMPLOYED_REQUIRED_DOCS)
+        return list(SALARIED_REQUIRED_DOCS)
+
+    def _build_eligibility_fallback_target(
+        self,
+        applicant: Applicant,
+        document_result: Optional[DocumentPackageResult],
+    ) -> Dict[str, Any]:
+        """Build an Applicant-backed eligibility payload preserving missing-document state."""
+        payload = applicant.model_dump()
+        expected_docs = self._expected_documents_for_applicant(applicant)
+
+        if document_result is not None:
+            found_types = [d.document_type for d in document_result.documents_found]
+            if document_result.documents_missing:
+                missing_docs = list(document_result.documents_missing)
+            else:
+                missing_docs = [d for d in expected_docs if d not in set(found_types)]
+        else:
+            found_types = []
+            missing_docs = expected_docs
+
+        payload["documents_found"] = found_types
+        payload["documents_missing"] = missing_docs
+        payload["is_complete"] = False
+        return payload
 
     def load_applicant(self, application_id: str) -> Optional[Applicant]:
         """Load applicant structured information from dataset or cache."""

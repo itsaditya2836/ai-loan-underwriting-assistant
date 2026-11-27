@@ -176,7 +176,7 @@ Top features identified by the Random Forest model:
 | 3 | `monthly_expenses` | **10.89%** | Discretionary consumption burden on monthly net cash flow |
 | 4 | `monthly_income` | **10.12%** | Primary debt-servicing baseline |
 | 5 | `net_disposable_income` | **8.61%** | Free cash flow cushion after existing and prospective obligations |
-| 6 | `dti_ratio` | **7.44%** | Total debt obligation burden relative to gross income |
+| 6 | `employment_years` | **7.26%** | Career and earning stability tenure |
 
 ---
 

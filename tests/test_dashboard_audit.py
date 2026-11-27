@@ -26,16 +26,23 @@ from app.orchestration.orchestrator import UnderwritingOrchestrator
 from app.schemas.decision import DecisionOutcome
 from app.ui.dashboard import (
     execute_underwriting_pipeline,
+    format_eligibility_metrics_summary,
     get_applicant_by_id,
     has_document_package,
     load_all_applicants_metadata,
 )
+from config.settings import get_settings
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db():
-    """Ensure audit table is created before every test."""
+def setup_test_db(tmp_path, monkeypatch):
+    """Provide an isolated temporary SQLite database for every test."""
+    db_file = tmp_path / "test_loan_underwriting.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file}")
+    get_settings.cache_clear()
     init_audit_table()
+    yield
+    get_settings.cache_clear()
 
 
 # ==============================================================================
@@ -175,6 +182,18 @@ def test_audit_filtering():
 
 def test_audit_analytics_summary():
     """Test 5: Verify aggregate analytics summary calculation."""
+    empty_summary = get_audit_analytics_summary()
+    assert empty_summary["total_runs"] == 0
+    assert empty_summary["unique_applications"] == 0
+
+    orchestrator = UnderwritingOrchestrator()
+    decision_agent = DecisionReasoningAgent()
+
+    for app_id in ("APP0002", "APP0001"):
+        analysis = orchestrator.process(app_id)
+        decision = decision_agent.evaluate(analysis)
+        save_underwriting_run(analysis, decision, execution_time_ms=75.0)
+
     summary = get_audit_analytics_summary()
 
     assert "total_runs" in summary
@@ -185,8 +204,8 @@ def test_audit_analytics_summary():
     assert "eligibility_distribution" in summary
     assert "manual_review_rate" in summary
 
-    assert summary["total_runs"] > 0
-    assert summary["unique_applications"] > 0
+    assert summary["total_runs"] == 2
+    assert summary["unique_applications"] == 2
     assert summary["manual_review_rate"] >= 0.0
 
 
@@ -226,3 +245,59 @@ def test_applicant_metadata_loading():
     # Check physical document detection
     assert has_document_package("APP0001") is True
     assert has_document_package("NON_EXISTENT_APP") is False
+
+
+# ==============================================================================
+# UI FORMATTING & ENTRYPOINT CONFIGURATION REGRESSION TESTS (STAGE 1)
+# ==============================================================================
+
+
+def test_zero_dti_eligibility_metrics_formatting():
+    """Verify zero DTI (0.0%) renders cleanly instead of being hidden as falsy."""
+    from app.schemas.applicant import EligibilityResult, EligibilityStatus
+
+    zero_dti = EligibilityResult(
+        applicant_id="APP_ZERO_DTI",
+        status=EligibilityStatus.ELIGIBLE,
+        eligible=True,
+        max_eligible_amount=2500000.0,
+        dti_ratio=0.0,
+    )
+    summary_line = format_eligibility_metrics_summary(zero_dti)
+    assert "₹2,500,000.00" in summary_line
+    assert "`0.0%`" in summary_line
+
+    missing_dti = EligibilityResult(
+        applicant_id="APP_MISSING_DTI",
+        status=EligibilityStatus.REVIEW_REQUIRED,
+        eligible=False,
+        max_eligible_amount=None,
+        dti_ratio=None,
+    )
+    missing_line = format_eligibility_metrics_summary(missing_dti)
+    assert "N/A" in missing_line
+
+
+def test_streamlit_page_config_called_once_at_entrypoint(monkeypatch):
+    """Verify page config lives at entry point and render_dashboard does not duplicate it."""
+    import streamlit as st
+
+    from app.ui import dashboard
+
+    calls = []
+    monkeypatch.setattr(st, "set_page_config", lambda **kwargs: calls.append(kwargs))
+    dashboard.configure_page()
+    assert len(calls) == 1
+    assert calls[0]["page_title"] == "AI Loan Underwriting Assistant"
+
+
+def test_cli_verification_entrypoint_runs_without_streamlit_config(monkeypatch):
+    """Verify CLI health check initializes DB cleanly without triggering page config."""
+    import streamlit as st
+
+    import app.main as app_main
+
+    calls = []
+    monkeypatch.setattr(st, "set_page_config", lambda **kwargs: calls.append(kwargs))
+    app_main.run_cli_verification()
+    assert calls == []

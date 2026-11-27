@@ -14,7 +14,11 @@ from app.schemas.applicant import (
     RiskLevel,
 )
 from app.schemas.decision import DecisionOutcome, DecisionReason
-from app.schemas.underwriting import OrchestrationStatus, UnderwritingAnalysisResult
+from app.schemas.underwriting import (
+    AgentStatus,
+    OrchestrationStatus,
+    UnderwritingAnalysisResult,
+)
 
 
 class DecisionRulesEngine:
@@ -142,17 +146,27 @@ class DecisionRulesEngine:
 
         # Priority 3 — Critical missing evidence (Missing docs -> MANUAL_REVIEW)
         missing_docs = self._get_missing_docs(doc_res, anom_res)
-        if self.policy.enforce_complete_documents and missing_docs:
+        doc_unverified = self._has_unverified_documents(analysis)
+        if self.policy.enforce_complete_documents and (missing_docs or doc_unverified):
+            missing_desc = (
+                f"Mandatory document evidence missing: {', '.join(missing_docs)}."
+                if missing_docs
+                else "Mandatory document verification failed or produced no readable documents."
+            )
             reasons.append(
                 DecisionReason(
                     code="DEC-DOC-001",
                     category="DOCUMENT",
                     severity="BLOCKING",
                     description=(
-                        f"Mandatory document evidence missing: {', '.join(missing_docs)}. "
+                        f"{missing_desc} "
                         "Complete financial verification cannot be performed without human intervention."
                     ),
-                    evidence=f"Missing document types: {missing_docs}",
+                    evidence=(
+                        f"Missing document types: {missing_docs}"
+                        if missing_docs
+                        else "Document verification incomplete or failed"
+                    ),
                     source_agent="DocumentIntakeAgent",
                 )
             )
@@ -300,6 +314,7 @@ class DecisionRulesEngine:
                 in self.policy.tolerated_anomaly_severities_for_approval
             )
             and not missing_docs
+            and not doc_unverified
         ):
             reasons.append(
                 DecisionReason(
@@ -380,6 +395,10 @@ class DecisionRulesEngine:
                 msg = f"Missing mandatory document(s): {', '.join(doc_res.documents_missing)}."
                 negative_factors.append(msg)
                 blocking_factors.append(msg)
+            elif doc_res.processing_status == "failed" or not doc_res.documents_found:
+                msg = "No verifiable supporting documents were processed."
+                negative_factors.append(msg)
+                blocking_factors.append(msg)
             supporting_evidence.append(
                 {
                     "source": "DocumentIntakeAgent",
@@ -390,6 +409,10 @@ class DecisionRulesEngine:
                     "ocr_used": doc_res.ocr_used,
                 }
             )
+        elif self._has_unverified_documents(analysis):
+            msg = "Document intake failed; supporting documents could not be verified."
+            negative_factors.append(msg)
+            blocking_factors.append(msg)
 
         # Eligibility Factors
         if elig_res:
@@ -486,6 +509,19 @@ class DecisionRulesEngine:
                 if d not in missing:
                     missing.append(d)
         return missing
+
+    @staticmethod
+    def _has_unverified_documents(analysis: UnderwritingAnalysisResult) -> bool:
+        """Return True when document verification failed or produced no usable documents."""
+        doc_res = analysis.document_result
+        doc_status = analysis.agent_statuses.get("document_agent")
+        if doc_status is not None and doc_status.status == AgentStatus.FAILED:
+            return True
+        if doc_res is not None and (
+            doc_res.processing_status == "failed" or not doc_res.documents_found
+        ):
+            return True
+        return False
 
     def _compute_confidence(
         self,

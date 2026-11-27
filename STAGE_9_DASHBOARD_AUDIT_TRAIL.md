@@ -110,7 +110,7 @@ The sidebar also provides:
 
 The **Application Details** screen presents the complete applicant profile formatted for underwriting scrutiny:
 - **Personal Profile**: Full Name, Age, Gender, City, Employment Type, Employer, Tenure, Dependents.
-- **Financial Ledger**: Declared Monthly Income, Existing EMI, Monthly Expenses, Total Monthly Obligations, Calculated Net Disposable Income, and Debt-to-Income (DTI) ratio.
+- **Financial Ledger**: Declared Monthly Income, Existing EMI, Declared Bank Balance, Monthly Expenses, Total Monthly Obligations, and Debt-to-Income (DTI) ratio.
 - **Loan Request**: Requested Loan Amount, Repayment Tenure, Bureau Credit Score.
 - **Application History**: Chronological table of all recorded underwriting evaluations for this specific applicant, demonstrating multi-run preservation.
 
@@ -236,7 +236,7 @@ All screens feature prominent disclaimers:
 
 ## 12. Automated Testing Suite
 
-The dashboard and audit trail are verified by `tests/test_dashboard_audit.py` (7 tests) and the broader project test suite:
+The dashboard and audit trail are verified by `tests/test_dashboard_audit.py` (10 tests, isolated via `tmp_path` SQLite databases) and the broader project test suite:
 - `test_audit_table_initialization`: Verifies SQLite schema creation and columns.
 - `test_save_and_retrieve_underwriting_run`: Tests full roundtrip audit persistence.
 - `test_audit_immutability_multiple_runs`: Verifies multiple evaluations of the same applicant preserve distinct IDs.
@@ -244,12 +244,12 @@ The dashboard and audit trail are verified by `tests/test_dashboard_audit.py` (7
 - `test_audit_analytics_summary`: Verifies KPI and distribution calculations.
 - `test_execute_underwriting_pipeline_integration`: Tests full multi-agent pipeline execution from the dashboard wrapper.
 - `test_applicant_metadata_loading`: Tests dataset parsing and physical document package detection.
+- `test_zero_dti_eligibility_metrics_formatting`: Verifies `0.0%` DTI displays cleanly.
+- `test_streamlit_page_config_called_once_at_entrypoint` & `test_cli_verification_entrypoint_runs_without_streamlit_config`: Verifies Streamlit entry-point configuration and CLI safety.
 
-**Test Suite Results:**
-- **Total Tests:** 167
-- **Passed:** 167 (100%)
-- **Failed:** 0
-- **Duration:** 8.67s
+**Test Suite Results (Stage 9 Baseline / Post-Stage 1 Cleanup):**
+- **Stage 9 Baseline:** 167 tests passing
+- **After Stage 1 Stabilization:** 176 tests passing (100%)
 
 ---
 

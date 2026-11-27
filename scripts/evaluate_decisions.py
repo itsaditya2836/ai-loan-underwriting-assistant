@@ -280,7 +280,7 @@ def evaluate_decisions() -> Dict[str, Any]:
         "4. This evaluation reports policy behavior on synthetic cohorts; it does not measure real banking defaults."
     )
     print(
-        "5. Stage 8 COMPLETE: Final decision engine implemented; Stage 9 dashboard NOT implemented."
+        "5. Stage 8 COMPLETE: Final decision engine implemented; Stage 9 dashboard & audit persistence run separately."
     )
     print("=" * 80 + "\n")
 

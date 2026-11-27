@@ -35,6 +35,7 @@ from app.database.audit import (
     save_underwriting_run,
 )
 from app.orchestration.orchestrator import UnderwritingOrchestrator
+from app.schemas.applicant import EligibilityResult
 from app.schemas.decision import DecisionReasoningResult
 from app.schemas.underwriting import UnderwritingAnalysisResult
 
@@ -184,6 +185,17 @@ def format_inr(val: Optional[float]) -> str:
     if val is None:
         return "N/A"
     return f"₹{val:,.2f}"
+
+
+def format_eligibility_metrics_summary(elig_res: EligibilityResult) -> str:
+    """Format max eligible loan amount and DTI summary line for display."""
+    dti_str = (
+        f"`{elig_res.dti_ratio:.1f}%`" if elig_res.dti_ratio is not None else "`N/A`"
+    )
+    return (
+        f"**Max Permitted Loan:** {format_inr(elig_res.max_eligible_amount)} | "
+        f"**Calculated DTI:** {dti_str}"
+    )
 
 
 # ==============================================================================
@@ -556,11 +568,7 @@ def render_underwriting_view(
             st.markdown(
                 f"**Eligibility Status:** `{elig_res.status.value}` | **Policy:** `{elig_res.policy_version}`"
             )
-            st.markdown(
-                f"**Max Permitted Loan:** {format_inr(elig_res.max_eligible_amount)} | **Calculated DTI:** `{elig_res.dti_ratio:.1f}%`"
-                if elig_res.dti_ratio
-                else ""
-            )
+            st.markdown(format_eligibility_metrics_summary(elig_res))
 
             st.markdown("**Deterministic Underwriting Policy Rules Breakdown:**")
             rule_rows = []
@@ -963,8 +971,8 @@ def render_analytics_view() -> None:
 # ==============================================================================
 
 
-def render_dashboard() -> None:
-    """Primary application entry point invoked by Streamlit."""
+def configure_page() -> None:
+    """Configure Streamlit page metadata once at the application entry point."""
     st.set_page_config(
         page_title="AI Loan Underwriting Assistant",
         page_icon="🏦",
@@ -972,6 +980,9 @@ def render_dashboard() -> None:
         initial_sidebar_state="expanded",
     )
 
+
+def render_dashboard() -> None:
+    """Render the Streamlit underwriting dashboard views."""
     init_audit_table()
     apply_custom_styles()
 
@@ -1054,4 +1065,5 @@ def render_dashboard() -> None:
 
 
 if __name__ == "__main__":
+    configure_page()
     render_dashboard()

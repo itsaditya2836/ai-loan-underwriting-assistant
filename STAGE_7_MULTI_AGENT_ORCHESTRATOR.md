@@ -69,7 +69,7 @@ It aggregates findings from:
                                 │
                                 ▼
                      Stage 8 Decision Agent
-                       (NOT IMPLEMENTED)
+                   (Executed separately downstream)
 ```
 
 ### Module Structure

@@ -58,14 +58,14 @@ Orchestrator Agent
 
 - **Programming Language**: Python 3.11+
 - **Environment**: Python Virtual Environment (`.venv`)
-- **Frontend / Dashboard**: Streamlit
-- **Backend / API**: FastAPI & Uvicorn
+- **Frontend / Dashboard**: Streamlit (`app/ui/dashboard.py` launched via `app/main.py`)
+- **Backend / API**: In-process Python orchestration (`FastAPI` and `uvicorn` are listed as dependencies for a planned future REST API, not yet implemented)
 - **Data Processing**: Pandas, NumPy
 - **Machine Learning**: Scikit-learn
 - **Document Processing**: PyMuPDF (Fitz), Pillow
 - **OCR**: pytesseract
-- **LLM / Agents**: Gemini integration (framework-agnostic architecture, implemented in future stages)
-- **Database**: SQLite (prototype layer with seamless migration support for PostgreSQL)
+- **LLM / Agents**: Deterministic local agents (Gemini integration via `GEMINI_API_KEY` is planned for future stages, not yet implemented)
+- **Database**: SQLite (prototype layer with future migration planned for PostgreSQL)
 - **Configuration**: python-dotenv & Pydantic BaseSettings
 - **Testing**: pytest
 - **Code Quality**: black, ruff
@@ -110,17 +110,29 @@ AI-Loan-Underwriting-Assistant/
 │   │   ├── detectors.py            # Deterministic cross-document consistency checks
 │   │   ├── scoring.py              # Composite anomaly scoring (0-100) and severity aggregation
 │   │   └── anomaly_detection.py    # Backward-compatible AnomalyDetector adapter
+│   ├── decision/                   # Deterministic decision synthesis engine (Stage 8)
+│   │   ├── __init__.py
+│   │   ├── decision_agent.py       # DecisionReasoningAgent core engine
+│   │   ├── policy.py               # Centralized DecisionPolicy and REASON_CODES
+│   │   ├── reasoning.py            # Human-readable summary synthesizer
+│   │   └── rules.py                # 7-tier rule precedence & confidence scoring
 │   ├── orchestration/              # Multi-agent underwriting pipeline coordination
 │   │   ├── __init__.py             # Public orchestrator exports
 │   │   ├── orchestrator.py         # UnderwritingOrchestrator engine
 │   │   └── errors.py               # Orchestration exception hierarchy
+│   ├── processing/                 # Backward-compatibility aliases for document_processing
 │   ├── database/                   # Database access layer
 │   │   ├── __init__.py
-│   │   └── db.py                   # SQLite connection manager and migrations
+│   │   ├── audit.py                # Immutable SQLite underwriting_runs audit trail
+│   │   └── db.py                   # SQLite connection manager
+│   ├── ui/                         # Active Streamlit UI package
+│   │   ├── __init__.py
+│   │   └── dashboard.py            # Stage 9 Loan Officer dashboard & audit trail
 │   ├── schemas/                    # Pydantic data models and contracts
 │   │   ├── __init__.py
 │   │   ├── applicant.py            # Applicant, Document, and Agent result schemas
 │   │   ├── anomaly.py              # AnomalyFlag, AnomalyResult, AnomalySeverity schemas
+│   │   ├── decision.py             # DecisionOutcome, DecisionReason, DecisionReasoningResult
 │   │   └── underwriting.py         # OrchestrationStatus, AgentStatus, UnderwritingAnalysisResult
 │   └── utils/                      # Shared helper utilities
 │       ├── __init__.py
@@ -129,19 +141,29 @@ AI-Loan-Underwriting-Assistant/
 │   ├── risk_model.joblib           # Trained RandomForestClassifier
 │   └── risk_model_metadata.json    # Hyper-parameters & feature importances
 ├── data/
-│   ├── applicants/                 # Applicant JSON/metadata profiles
-│   ├── documents/                  # Raw input PDFs and scanned images
+│   ├── applicants/                 # Placeholder directory (.gitkeep)
+│   ├── documents/                  # Raw input PDFs and scanned images (APP0001-APP0030)
 │   ├── synthetic_data/             # Generated synthetic loan datasets
-│   └── processed/                  # Cached extractions and intermediate outputs
-├── models/                         # Serialized ML model artifacts (.pkl)
+│   └── processed/                  # Placeholder directory (.gitkeep)
+├── scripts/                        # Dataset generation, training & evaluation scripts
 ├── tests/                          # Automated unit and integration test suite
 │   ├── __init__.py
+│   ├── test_dashboard_audit.py     # Stage 9 dashboard helpers & isolated audit DB tests
+│   ├── test_decision_agent.py      # Stage 8 decision synthesis tests
+│   ├── test_document_agent.py      # DocumentIntakeAgent tests
+│   ├── test_document_generation.py # Synthetic PDF & manifest tests
+│   ├── test_document_package.py    # DocumentPackageProcessor tests
 │   ├── test_document_processing.py # Document processing foundation tests
 │   ├── test_eligibility.py         # Eligibility agent and schema tests
+│   ├── test_extractor.py           # Field extractor and classifier tests
+│   ├── test_fraud.py               # Fraud, decision, config, and db tests
+│   ├── test_ocr.py                 # Local Tesseract OCR tests
+│   ├── test_orchestrator.py        # Stage 7 orchestrator & fallback regression tests
+│   ├── test_pdf_reader.py          # PyMuPDF PDF reader tests
 │   ├── test_risk.py                # Risk scoring and schema tests
-│   └── test_fraud.py               # Fraud, decision, config, and db tests
+│   └── test_synthetic_data.py      # Synthetic dataset validation tests
 ├── frontend/
-│   └── streamlit_app.py            # Loan Officer decision-support dashboard
+│   └── streamlit_app.py            # Legacy Stage 1 static mockup (superseded by app/ui/dashboard.py)
 ├── config/
 │   ├── __init__.py
 │   └── settings.py                 # Pydantic settings loading from .env
@@ -186,7 +208,7 @@ Default configuration variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `GEMINI_API_KEY` | Google Gemini API key (integrated in Stage 7) | *(Empty)* |
+| `GEMINI_API_KEY` | Google Gemini API key (planned for future LLM stage; currently unused) | *(Empty)* |
 | `DATABASE_URL` | Database connection URI | `sqlite:///./loan_underwriting.db` |
 | `APP_ENV` | Environment identifier (`development`, `test`, `production`) | `development` |
 | `LOG_LEVEL` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
@@ -199,27 +221,25 @@ Default configuration variables:
 
 ### 1. Main Verification Entry Point
 
-Verify the core application packages, configuration, and logging:
+Verify the core application packages, configuration, and SQLite audit table initialization:
 
 ```bash
-python -m app.main
+.venv/bin/python app/main.py
 ```
 
-### 2. Loan Officer Streamlit Dashboard
+### 2. Loan Officer Streamlit Dashboard (Active UI)
 
-Launch the Streamlit interactive review dashboard:
+Launch the active Stage 9 Streamlit interactive review dashboard (`app/ui/dashboard.py`):
 
 ```bash
-streamlit run frontend/streamlit_app.py
+.venv/bin/streamlit run app/main.py
 ```
 
-### 3. FastAPI Backend Service (Future Stage)
+*(Note: `frontend/streamlit_app.py` is an obsolete Stage 1 static mockup shell and is not the active application.)*
 
-When the REST API service is activated in upcoming stages, it will be run via:
+### 3. FastAPI Backend Service (Planned — Not Yet Implemented)
 
-```bash
-uvicorn app.main:app --reload --port 8000
-```
+No FastAPI application or HTTP endpoints exist in the current prototype; underwriting currently runs synchronously in-process. FastAPI (`fastapi` / `uvicorn` in `requirements.txt`) is planned for a future stage.
 
 ---
 
@@ -227,10 +247,10 @@ uvicorn app.main:app --reload --port 8000
 
 ### Automated Unit Tests
 
-Run the test suite using `pytest`:
+Run the test suite using `pytest` (audit DB tests use isolated temporary `tmp_path` SQLite databases, and setting `DATABASE_URL` provides extra safety against touching `loan_underwriting.db`):
 
 ```bash
-pytest
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
 ```
 
 ### Linting and Code Formatting
@@ -434,7 +454,7 @@ Primary Reason:        [DEC-APP-001] Application satisfies all policy requiremen
 Recommendation:        REJECT (Confidence: 100.0%)
 Human Review Required: True
 Primary Reason:        [DEC-ELIG-001] Application is INELIGIBLE due to failure of mandatory rule(s):
-                       Minimum Credit Score Threshold (Credit score 612 < 650).
+                       Minimum Credit Score Threshold (Credit score 584 < 650).
 
 --- Discrepancy Applicant (APP0006) ---
 Recommendation:        MANUAL_REVIEW (Confidence: 85.0%)
@@ -503,8 +523,8 @@ Stage 9 implements a comprehensive, interactive **Streamlit Dashboard** and an i
 # Run the Stage 9 dashboard and audit trail test suite
 pytest tests/test_dashboard_audit.py
 
-# Run the complete project test suite (167 passing tests)
-pytest
+# Run the complete project test suite with isolated DB path
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
 ```
 
 ---

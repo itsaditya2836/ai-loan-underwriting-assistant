@@ -4,13 +4,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.agents.decision_agent import DecisionReasoningAgent
 from app.agents.document_agent import DocumentIntakeAgent
 from app.agents.fraud_agent import FraudAnomalyAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.risk_agent import RiskAgent
 from app.orchestration.orchestrator import UnderwritingOrchestrator
 from app.schemas.anomaly import AnomalySeverity
-from app.schemas.applicant import Applicant, EligibilityStatus, RiskLevel
+from app.schemas.applicant import (
+    Applicant,
+    DocumentPackageResult,
+    EligibilityStatus,
+    RiskLevel,
+)
+from app.schemas.decision import DecisionOutcome
 from app.schemas.underwriting import AgentStatus, OrchestrationStatus
 
 
@@ -291,3 +298,327 @@ def test_orchestrator_agent_facade(orchestrator_agent: OrchestratorAgent):
     res_pipeline = orchestrator_agent.run_pipeline(applicant)
     assert res_pipeline.application_id == "APP0002"
     assert res_pipeline.orchestration_status == OrchestrationStatus.SUCCESS
+
+
+# ==============================================================================
+# FALLBACK & MISSING-DOCUMENT REGRESSION TESTS (STAGE 1)
+# ==============================================================================
+
+
+def test_regression_valid_complete_document_package(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 1: Applicant with complete valid documents passes via document extraction."""
+    analysis = orchestrator.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert analysis.document_result.is_complete is True
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.ELIGIBLE
+    assert decision.recommendation == DecisionOutcome.APPROVE
+
+
+def test_regression_missing_required_documents_preserved(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 2: Applicant with partial package preserves missing docs and routes to review."""
+    analysis = orchestrator.process("APP0016")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert "bank_statement" in analysis.document_result.documents_missing
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
+    assert analysis.anomaly_result is not None
+    assert "bank_statement" in analysis.anomaly_result.missing_evidence
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+
+
+def test_regression_no_document_directory_qualifying_profile(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 3: Applicant with no document folder evaluates profile rules yet requires docs."""
+    analysis = orchestrator.process("APP0031")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.agent_statuses["document_agent"].status == AgentStatus.FAILED
+    assert analysis.agent_statuses["eligibility_agent"].status == AgentStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert len(analysis.document_result.documents_missing) > 0
+
+    elig = analysis.eligibility_result
+    assert elig is not None
+    assert elig.status == EligibilityStatus.REVIEW_REQUIRED
+    assert elig.rules_failed == []
+    assert elig.rules_requiring_review == ["DOCUMENTS_COMPLETE"]
+    assert "MIN_CREDIT_SCORE" in elig.rules_passed
+    assert "MIN_MONTHLY_INCOME" in elig.rules_passed
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert any(r.code == "DEC-DOC-001" for r in decision.reasons)
+
+
+def test_regression_failed_or_empty_document_package_fallback():
+    """Case 4: Empty/failed DocumentPackageResult falls back to Applicant without hiding missing docs."""
+    empty_failed_pkg = DocumentPackageResult(
+        applicant_id="APP0002",
+        package_dir="data/documents/APP0002",
+        documents_found=[],
+        documents_missing=[],
+        expected_documents=[
+            "loan_application",
+            "identity_proof",
+            "salary_slip",
+            "bank_statement",
+        ],
+        is_complete=False,
+        processing_status="failed",
+        processing_errors=["Simulated unreadable PDF package"],
+        all_extracted_fields={},
+    )
+    mock_doc_agent = MagicMock(spec=DocumentIntakeAgent)
+    mock_doc_agent.process_package.return_value = empty_failed_pkg
+
+    orch = UnderwritingOrchestrator(document_agent=mock_doc_agent)
+    analysis = orch.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
+    assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_passed
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert any(r.code == "DEC-DOC-001" for r in decision.reasons)
+
+
+def test_regression_document_agent_exception_qualifying_profile():
+    """DocumentIntakeAgent exception must still block auto-approval and require review."""
+    failing_doc_agent = MagicMock(spec=DocumentIntakeAgent)
+    failing_doc_agent.process_package.side_effect = IOError("Disk read failure")
+
+    orch = UnderwritingOrchestrator(document_agent=failing_doc_agent)
+    analysis = orch.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+
+
+def test_regression_disqualifying_profile_without_documents(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 5: Disqualifying profile without docs must evaluate INELIGIBLE (not REVIEW_REQUIRED)."""
+    analysis = orchestrator.process("APP0040")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.document_result is not None
+    assert len(analysis.document_result.documents_missing) > 0
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.INELIGIBLE
+    assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_failed
+    assert "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
+    assert decision.recommendation == DecisionOutcome.REJECT
+    assert any(r.code == "DEC-ELIG-001" for r in decision.reasons)
+
+    # Also verify via run_pipeline with zero-EMI, low-income disqualifying profile and no directory
+    disqualified = Applicant(
+        applicant_id="APP_NO_DOCS_FAIL",
+        name="Low Score Applicant",
+        age=30,
+        employment_type="Salaried",
+        employment_years=3.0,
+        monthly_income=20000.0,
+        existing_emi=0.0,
+        loan_amount=300000.0,
+        loan_tenure=36,
+        credit_score=560,
+        bank_balance=10000.0,
+    )
+    res_custom = orchestrator.run_pipeline(
+        disqualified, package_dir="data/documents/APP_DOES_NOT_EXIST"
+    )
+    assert res_custom.eligibility_result is not None
+    assert res_custom.eligibility_result.status == EligibilityStatus.INELIGIBLE
+    assert "MIN_CREDIT_SCORE" in res_custom.eligibility_result.rules_failed
+    assert "MIN_MONTHLY_INCOME" in res_custom.eligibility_result.rules_failed
+    assert res_custom.eligibility_result.dti_ratio == 0.0
+    assert "DOCUMENTS_COMPLETE" in res_custom.eligibility_result.rules_requiring_review
+
+
+# ==============================================================================
+# FALLBACK & MISSING-DOCUMENT REGRESSION TESTS (STAGE 1)
+# ==============================================================================
+
+
+def test_regression_valid_complete_document_package(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 1: Applicant with complete valid documents passes via document extraction."""
+    analysis = orchestrator.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert analysis.document_result.is_complete is True
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.ELIGIBLE
+    assert decision.recommendation == DecisionOutcome.APPROVE
+
+
+def test_regression_missing_required_documents_preserved(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 2: Applicant with partial package preserves missing docs and routes to review."""
+    analysis = orchestrator.process("APP0016")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert "bank_statement" in analysis.document_result.documents_missing
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    assert (
+        "DOCUMENTS_COMPLETE" in analysis.eligibility_result.rules_requiring_review
+    )
+    assert analysis.anomaly_result is not None
+    assert "bank_statement" in analysis.anomaly_result.missing_evidence
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+
+
+def test_regression_no_document_directory_qualifying_profile(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 3: Applicant with no document folder evaluates profile rules yet requires docs."""
+    analysis = orchestrator.process("APP0031")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.agent_statuses["document_agent"].status == AgentStatus.FAILED
+    assert analysis.agent_statuses["eligibility_agent"].status == AgentStatus.SUCCESS
+    assert analysis.document_result is not None
+    assert len(analysis.document_result.documents_missing) > 0
+
+    elig = analysis.eligibility_result
+    assert elig is not None
+    assert elig.status == EligibilityStatus.REVIEW_REQUIRED
+    assert elig.rules_failed == []
+    assert elig.rules_requiring_review == ["DOCUMENTS_COMPLETE"]
+    assert "MIN_CREDIT_SCORE" in elig.rules_passed
+    assert "MIN_MONTHLY_INCOME" in elig.rules_passed
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert any(r.code == "DEC-DOC-001" for r in decision.reasons)
+
+
+def test_regression_failed_or_empty_document_package_fallback():
+    """Case 4: Empty/failed DocumentPackageResult falls back to Applicant without hiding missing docs."""
+    empty_failed_pkg = DocumentPackageResult(
+        applicant_id="APP0002",
+        package_dir="data/documents/APP0002",
+        documents_found=[],
+        documents_missing=[],
+        expected_documents=[
+            "loan_application",
+            "identity_proof",
+            "salary_slip",
+            "bank_statement",
+        ],
+        is_complete=False,
+        processing_status="failed",
+        processing_errors=["Simulated unreadable PDF package"],
+        all_extracted_fields={},
+    )
+    mock_doc_agent = MagicMock(spec=DocumentIntakeAgent)
+    mock_doc_agent.process_package.return_value = empty_failed_pkg
+
+    orch = UnderwritingOrchestrator(document_agent=mock_doc_agent)
+    analysis = orch.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.eligibility_result is not None
+    assert (
+        analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    )
+    assert (
+        "DOCUMENTS_COMPLETE"
+        in analysis.eligibility_result.rules_requiring_review
+    )
+    assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_passed
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+    assert any(r.code == "DEC-DOC-001" for r in decision.reasons)
+
+
+def test_regression_document_agent_exception_qualifying_profile():
+    """DocumentIntakeAgent exception must still block auto-approval and require review."""
+    failing_doc_agent = MagicMock(spec=DocumentIntakeAgent)
+    failing_doc_agent.process_package.side_effect = IOError("Disk read failure")
+
+    orch = UnderwritingOrchestrator(document_agent=failing_doc_agent)
+    analysis = orch.process("APP0002")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.orchestration_status == OrchestrationStatus.PARTIAL_SUCCESS
+    assert analysis.eligibility_result is not None
+    assert (
+        analysis.eligibility_result.status == EligibilityStatus.REVIEW_REQUIRED
+    )
+    assert (
+        "DOCUMENTS_COMPLETE"
+        in analysis.eligibility_result.rules_requiring_review
+    )
+    assert decision.recommendation == DecisionOutcome.MANUAL_REVIEW
+
+
+def test_regression_disqualifying_profile_without_documents(
+    orchestrator: UnderwritingOrchestrator,
+):
+    """Case 5: Disqualifying profile without docs must evaluate INELIGIBLE (not REVIEW_REQUIRED)."""
+    analysis = orchestrator.process("APP0040")
+    decision = DecisionReasoningAgent().evaluate(analysis)
+
+    assert analysis.document_result is not None
+    assert len(analysis.document_result.documents_missing) > 0
+    assert analysis.eligibility_result is not None
+    assert analysis.eligibility_result.status == EligibilityStatus.INELIGIBLE
+    assert "MIN_CREDIT_SCORE" in analysis.eligibility_result.rules_failed
+    assert (
+        "DOCUMENTS_COMPLETE"
+        in analysis.eligibility_result.rules_requiring_review
+    )
+    assert decision.recommendation == DecisionOutcome.REJECT
+    assert any(r.code == "DEC-ELIG-001" for r in decision.reasons)
+
+    # Also verify via run_pipeline with zero-EMI, low-income disqualifying profile and no directory
+    disqualified = Applicant(
+        applicant_id="APP_NO_DOCS_FAIL",
+        name="Low Score Applicant",
+        age=30,
+        employment_type="Salaried",
+        employment_years=3.0,
+        monthly_income=20000.0,
+        existing_emi=0.0,
+        loan_amount=300000.0,
+        loan_tenure=36,
+        credit_score=560,
+        bank_balance=10000.0,
+    )
+    res_custom = orchestrator.run_pipeline(
+        disqualified, package_dir="data/documents/APP_DOES_NOT_EXIST"
+    )
+    assert res_custom.eligibility_result is not None
+    assert res_custom.eligibility_result.status == EligibilityStatus.INELIGIBLE
+    assert "MIN_CREDIT_SCORE" in res_custom.eligibility_result.rules_failed
+    assert "MIN_MONTHLY_INCOME" in res_custom.eligibility_result.rules_failed
+    assert res_custom.eligibility_result.dti_ratio == 0.0
+    assert (
+        "DOCUMENTS_COMPLETE"
+        in res_custom.eligibility_result.rules_requiring_review
+    )

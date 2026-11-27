@@ -2,7 +2,7 @@
 
 **Project Title:** AI Loan Underwriting Assistant: A Multi-Agent Agentic AI System for Faster Loan Processing  
 **Stage:** Stage 8 — Decision & Reasoning Agent  
-**Status:** COMPLETE (Stage 9 Dashboard & Audit Trail NOT started)  
+**Status:** COMPLETE (Stage 9 Dashboard & Audit Trail implemented subsequently)  
 **Governance Model:** Human-in-the-Loop Decision Support  
 
 ---
@@ -199,15 +199,17 @@ The Decision Confidence Score ($C \in [0.0, 100.0]$) quantifies **evidence compl
 > The Decision Confidence score is **NOT** a probability of loan default, repayment, or fraud. It reflects internal pipeline consistency and completeness of evidence.
 
 ### Formula & Deduction Schedule:
-The score starts at $100.0\%$ and undergoes deterministic deductions based on missing evidence and analytical friction:
+When `OrchestrationStatus.FAILED` (or `is_pipeline_failed`), confidence immediately resolves to `20.0%`. Otherwise, the score starts at $100.0\%$ and undergoes deterministic deductions based on missing evidence and analytical friction:
 
-$$C = \max(10.0, 100.0 - D_{\text{system}} - D_{\text{docs}} - D_{\text{risk}} - D_{\text{anomaly}})$$
+$$C = \max(10.0, 100.0 - D_{\text{system}} - D_{\text{docs}} - D_{\text{elig}} - D_{\text{risk}} - D_{\text{anomaly}})$$
 
 - **System Deductions ($D_{\text{system}}$)**:
-  - Pipeline `FAILED`: $-60.0\%$
-  - Pipeline `PARTIAL_SUCCESS`: $-25.0\%$
+  - Pipeline `FAILED`: returns fixed `20.0%`
+  - Pipeline `PARTIAL_SUCCESS`: $-20.0\%$
 - **Document Deductions ($D_{\text{docs}}$)**:
-  - Missing mandatory documents: $-20.0\%$ (base) $- 5.0\%$ per additional missing document
+  - Missing mandatory documents: $-\min(10.0 \times n, 25.0)\%$
+- **Eligibility Deductions ($D_{\text{elig}}$)**:
+  - `REVIEW_REQUIRED` eligibility status: $-15.0\%$
 - **Risk Deductions ($D_{\text{risk}}$)**:
   - `BORDERLINE` risk tier: $-15.0\%$
 - **Anomaly Deductions ($D_{\text{anomaly}}$)**:
@@ -317,7 +319,7 @@ $$\text{Manual Review Rate} = \frac{18}{30} = 60.0\%$$
 - **Partial pipeline executions**: 0 / 30 (0.0%)
 
 ### Cohort Breakdown:
-- **Normal / Document-Consistent (`APP0001`–`APP0005`)**: 4 APPROVE, 1 REJECT (`APP0001` has credit score 612 < 650).
+- **Normal / Document-Consistent (`APP0001`–`APP0005`)**: 4 APPROVE, 1 REJECT (`APP0001` has credit score 584 < 650).
 - **Income Mismatch (`APP0006`–`APP0010`)**: 5 MANUAL_REVIEW (Discrepancy routed to human verification).
 - **Name Mismatch (`APP0011`–`APP0015`)**: 3 MANUAL_REVIEW, 2 REJECT (`APP0012`, `APP0014` failed minimum credit score).
 - **Missing Documents (`APP0016`–`APP0020`)**: 4 MANUAL_REVIEW, 1 REJECT (`APP0018` failed minimum credit score).
@@ -345,4 +347,4 @@ $$\text{Manual Review Rate} = \frac{18}{30} = 60.0\%$$
 ## 14. Stage Boundary Confirmation
 
 - **Stage 8 — Decision & Reasoning Agent**: **COMPLETE**
-- **Stage 9 — Dashboard & Audit Trail**: **NOT IMPLEMENTED** (Scheduled for next stage)
+- **Stage 9 — Dashboard & Audit Trail**: **COMPLETE** (Implemented in `app/ui/dashboard.py` and `app/database/audit.py`)

@@ -182,16 +182,16 @@ The evaluation benchmark script `scripts/evaluate_eligibility.py` executed acros
 - **Total Applicants**: 30
 - **ELIGIBLE**: 18 (60.0%)
 - **INELIGIBLE**: 8 (26.7%) — Applicants with credit score < 650
-- **REVIEW_REQUIRED**: 4 (13.3%) — Applicants with missing physical documents (`APP0016`–`APP0019`)
-  *(Note: `APP0020` has both a missing document and credit score 545 < 650; failure precedence correctly classified it as INELIGIBLE).*
+- **REVIEW_REQUIRED**: 4 (13.3%) — Applicants with missing physical documents (`APP0016`, `APP0017`, `APP0019`, `APP0020`)
+  *(Note: `APP0018` has both a missing document (`identity_proof`) and credit score 647 < 650; failure precedence correctly classified it as INELIGIBLE).*
 
 #### Cohort Breakdown:
 - **APP0001–APP0005 (Consistent Baseline)**: 4 Eligible, 1 Ineligible (`APP0001` credit score 584)
 - **APP0006–APP0010 (Income Mismatch Cohort)**: 5 Eligible (Income mismatch is evaluated by the downstream Fraud Agent, not rejected in Stage 4)
 - **APP0011–APP0015 (Name Mismatch Cohort)**: 3 Eligible, 2 Ineligible (`APP0012` score 558, `APP0014` score 530)
-- **APP0016–APP0020 (Missing Documents Cohort)**: 4 Review Required, 1 Ineligible (`APP0020` score 545)
-- **APP0021–APP0025 (Financial Inconsistency Cohort)**: 2 Eligible, 3 Ineligible (`APP0021` score 548, `APP0023` score 612, `APP0024` score 589)
-- **APP0026–APP0030 (Borderline Cohort)**: 4 Eligible, 1 Ineligible (`APP0027` score 638)
+- **APP0016–APP0020 (Missing Documents Cohort)**: 4 Review Required, 1 Ineligible (`APP0018` score 647)
+- **APP0021–APP0025 (Financial Inconsistency Cohort)**: 2 Eligible, 3 Ineligible (`APP0021` score 576, `APP0023` score 642, `APP0025` score 646)
+- **APP0026–APP0030 (Borderline Cohort)**: 4 Eligible, 1 Ineligible (`APP0029` score 640)
 
 #### Rule Pass Rates:
 - `DOCUMENTS_COMPLETE`: 25 Passed (83.3%), 5 Review Required (16.7%)

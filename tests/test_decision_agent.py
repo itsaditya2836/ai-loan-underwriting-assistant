@@ -145,7 +145,7 @@ def make_mock_analysis_result(
             if eligibility_status == EligibilityStatus.INELIGIBLE
             else []
         ),
-        summary=f"Eligibility status: {eligibility_status.value}",
+        remarks=f"Eligibility status: {eligibility_status.value}",
     )
 
     # Real Stage 5 Risk Result
@@ -220,7 +220,7 @@ def make_mock_analysis_result(
         risk_result=mock_risk,
         anomaly_result=mock_anom,
         summary="Test analysis pipeline summary",
-        total_pipeline_duration_ms=44.0,
+        total_duration_ms=44.0,
     )
 
 

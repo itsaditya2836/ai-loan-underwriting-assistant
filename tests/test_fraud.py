@@ -372,10 +372,16 @@ def test_configuration_loading():
     assert "sqlite" in settings.database_url
 
 
-def test_database_connection():
+def test_database_connection(tmp_path, monkeypatch):
     """Verify SQLite database connection context manager functions cleanly."""
-    with get_database_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 AS alive;")
-        row = cursor.fetchone()
-        assert row["alive"] == 1
+    db_file = tmp_path / "test_connection.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file}")
+    get_settings.cache_clear()
+    try:
+        with get_database_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 AS alive;")
+            row = cursor.fetchone()
+            assert row["alive"] == 1
+    finally:
+        get_settings.cache_clear()

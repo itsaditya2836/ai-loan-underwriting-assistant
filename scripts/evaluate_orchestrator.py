@@ -175,7 +175,7 @@ def evaluate_orchestrator() -> Dict[str, Any]:
     print(f"Pipeline Specification:     {orchestrator.pipeline_version}")
     print("Execution Paradigm:         Deterministic Multi-Agent Coordination")
     print(
-        "Stage Boundary:             Orchestration only; Stage 8 Decisioning NOT implemented"
+        "Stage Boundary:             Orchestration only; Stage 8 Decisioning not invoked"
     )
     print("-" * 80)
 
