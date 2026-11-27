@@ -124,14 +124,22 @@ AI-Loan-Underwriting-Assistant/
 │   │   ├── __init__.py             # Public orchestrator exports
 │   │   ├── orchestrator.py         # UnderwritingOrchestrator engine
 │   │   └── errors.py               # Orchestration exception hierarchy
+│   │   └── consistency.py          # Stage 4 input/output contracts & cross-agent verifier
 │   ├── processing/                 # Backward-compatibility aliases for document_processing
 │   ├── database/                   # Database access layer
 │   │   ├── __init__.py
-│   │   ├── audit.py                # Immutable SQLite underwriting_runs audit trail
-│   │   └── db.py                   # SQLite connection manager
-│   ├── ui/                         # Active Streamlit UI package
+│   │   ├── applications.py         # Persisted submitted_applications table (Stage 5)
+│   │   ├── audit.py                # Immutable SQLite underwriting_runs ledger & snapshots
+│   │   └── db.py                   # SQLite connection manager & schema initializer
+│   ├── ui/                         # Active Streamlit UI package (Stage 5)
 │   │   ├── __init__.py
-│   │   └── dashboard.py            # Stage 9 Loan Officer dashboard & audit trail
+│   │   ├── components.py           # Styling, INR/unavailable formatters & cards
+│   │   ├── dashboard.py            # Main 7-page controller & backwards-compatible helpers
+│   │   ├── services.py             # Validated intake, PDF upload lifecycle & backend glue
+│   │   ├── state.py                # Streamlit session-state keys & rerun-safe transitions
+│   │   ├── views_intake.py         # New Application intake & PDF upload workflow
+│   │   ├── views_portfolio.py      # Dashboard, Applications, Details & Audit History
+│   │   └── views_results.py        # Underwriting Results & Document Review views
 │   ├── schemas/                    # Pydantic data models and contracts
 │   │   ├── __init__.py
 │   │   ├── applicant.py            # Applicant, Document, and Agent result schemas
@@ -165,6 +173,7 @@ AI-Loan-Underwriting-Assistant/
 │   ├── test_orchestrator.py        # Stage 7 orchestrator & fallback regression tests
 │   ├── test_pdf_reader.py          # PyMuPDF PDF reader tests
 │   ├── test_risk.py                # Risk scoring and schema tests
+│   ├── test_streamlit_app.py       # Stage 5 end-to-end Streamlit AppTest & UI workflow tests
 │   └── test_synthetic_data.py      # Synthetic dataset validation tests
 ├── frontend/
 │   └── streamlit_app.py            # Legacy Stage 1 static mockup (superseded by app/ui/dashboard.py)
@@ -506,62 +515,38 @@ Primary Reason:        [DEC-ANOM-001] Cross-document discrepancy detected (ANOM-
 
 ---
 
-## Stage 9 — Dashboard & Audit Trail
+## Stage 5 / Stage 9 — Complete Streamlit Application & Audit Trail
 
-Stage 9 implements a comprehensive, interactive **Streamlit Dashboard** and an immutable **SQLite Audit Trail** providing an executive decision-support interface for loan officers, risk managers, and auditors.
+The interactive **Streamlit Application** (`app/ui/`) and **SQLite Audit Trail** (`app/database/`) provide a full 7-page local underwriting workbench backed directly by the Stage 1–4 multi-agent pipeline (detailed in [`STAGE_5_STREAMLIT_APPLICATION.md`](STAGE_5_STREAMLIT_APPLICATION.md)):
 
-### How to Start the Dashboard
+### How to Start the Application
 
 ```bash
-# Launch the Streamlit Underwriting Dashboard
-.venv/bin/streamlit run app/main.py
+# Verify configuration and initialize SQLite tables cleanly via CLI
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/python app/main.py
 
-# Or verify system health and database tables via CLI
-.venv/bin/python app/main.py
+# Launch the Streamlit Underwriting Application
+.venv/bin/streamlit run app/main.py
 ```
 
-### Major Dashboard Features
+### Key Implemented Workflows
 
-1. **🚀 Underwriting Pipeline Screen**:
-   - Applicant selection across all 100 synthetic profiles with physical document package indicators.
-   - One-click end-to-end multi-agent pipeline execution (`▶ Run Underwriting Analysis`).
-   - Executive Summary Cards: AI Recommendation (`APPROVE`, `REJECT`, `MANUAL_REVIEW`), Decision Confidence (0.0%–100.0%), Stage 4 Eligibility, Stage 5 Risk Tier & Score, Stage 6 Anomaly Severity & Flags, Stage 3 Verified Documents.
-   - Explainable Reasoning section displaying the Stage 8 executive narrative and granular reason cards.
-   - Three distinct factor breakdown cards: Positive Factors (🟢), Negative Factors (🟡), and Blocking Factors (🔴).
-   - Multi-agent execution telemetry tracking individual agent status and wall-clock execution latency.
-   - Deep-dive analytical tabs for Stage 3 Document Intelligence, Stage 4 Eligibility Rules, Stage 5 ML Risk Assessment, and Stage 6 Fraud/Anomaly Detection.
+1. **Dashboard**: Displays SQLite-derived application vs execution KPIs (excluding failed pipeline runs from completed application totals), decision/risk distributions, daily trends, and recent activity filters.
+2. **New Application (Applicant Intake & PDF Upload)**:
+   - Schema-validated `Applicant` intake preserving valid zero values (`existing_emi=0.0`, `bank_balance=0.0`) with collision-free reference ID generation (`APP-YYYYMMDD-XXXX`).
+   - Multi-file PDF upload validation (`.pdf`, `<= 25 MB`, `%PDF-` signature, active-content scan, SHA-256 deduplication), per-file removal, cached pre-submission Stage 3 extraction previews, ephemeral temp-directory cleanup, duplicate-submission prevention, and safe execution through `UnderwritingOrchestrator` + `DecisionReasoningAgent`.
+3. **Applications & Application Details**: Unified directory merging persisted `submitted_applications` and read-only synthetic reference applicants (`APP0001`–`APP0100`) without join duplication, with chronological multi-run inspection.
+4. **Underwriting Results**: Presents mapped AI recommendations (`APPROVED (APPROVE)`, `REJECTED (REJECT)`, `MANUAL_REVIEW`), eligibility rules, ML risk tier/score (`Unavailable` when missing — never `0.0`), fraud status (`UNAVAILABLE` when failed — never `NONE`), document verification diagnostics, cross-agent conflicts, review reasons, and agent statuses.
+5. **Document Review**: Per-document OCR/page telemetry, classification confidence (heuristic notice), missing/invalid/ambiguous/conflicting fields, and privacy-masked identifiers/account numbers.
+6. **Audit History**: Read-only SQLite compliance ledger (`underwriting_runs` + masked `details_snapshot_json`) with multi-filter search and run inspection (officer overrides belong to Stage 6).
 
-2. **👤 Application Details Screen**:
-   - Comprehensive applicant dossier (Personal, Employment, Financial Ledger, Loan Request).
-   - Complete application history showing all historical evaluations for the selected applicant (`Run 1`, `Run 2`, etc.), demonstrating multi-run preservation.
+### Human-in-the-Loop & Verification Commands
 
-3. **📜 Audit Trail & History Screen**:
-   - Centralized compliance ledger powered by the SQLite `underwriting_runs` table with idempotent Stage 4 schema migration (`risk_score_available`, `review_reasons_json`, `agent_statuses_json`, `consistency_conflicts_json`, `validation_warnings_json`).
-   - Safe persistence (`save_underwriting_run_safe`) distinguishes unavailable/failed agent outputs (`"UNAVAILABLE"` / `risk_score=None`) cleanly from valid `0.0` scores and isolates persistence failures without crashing underwriting workflows.
-   - Interactive filtering by Recommendation, Pipeline Status, Risk Tier, and Anomaly Severity.
-   - Full historical run inspector providing read-only snapshots of previous underwriting analyses.
-   - Immutability: Every run receives a unique `run_id` and is never overwritten or deleted.
-
-4. **📊 Aggregate Portfolio Analytics**:
-   - Executive KPIs: Total Runs, Unique Applications Evaluated, Manual Review Rate (%), Approval Rate (%), Average Confidence (%), and Average Latency.
-   - 4 interactive distribution charts: Recommendation Distribution, Risk Tier Distribution, Anomaly Severity Distribution, and Eligibility Status Distribution.
-   - Preload utility button allowing reviewers to populate the audit table with all 30 baseline cohorts in seconds.
-
-### Human-in-the-Loop & Ethical Governance
-- **Advisory Decision Support**: Labeled prominently as **`AI RECOMMENDATION`**, never `FINAL BANK DECISION`.
-- **Mandatory Review Banner**: Every application displays the warning:
-  > *"Human Review Required: This system provides an AI-generated underwriting recommendation for decision support. Final lending authority remains with an authorized human underwriter."*
-- **Academic / Synthetic Data Disclaimer**: Prominently notes that data is synthetic and not connected to real customer accounts.
-- **Anomaly Terminology**: Anomaly indicators are strictly framed as inconsistencies requiring verification; never labeled as confirmed fraud.
-
-### Verification & Testing Commands
+- **Advisory Decision Support**: Labeled **`AI RECOMMENDATION`**; mandatory HITL banners keep lending authority with human officers.
+- **UI & Audit Tests**:
 
 ```bash
-# Run the Stage 9 dashboard and audit trail test suite
-pytest tests/test_dashboard_audit.py
-
-# Run the complete project test suite with isolated DB path
-DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest
+DATABASE_URL="sqlite:////tmp/test_audit.db" .venv/bin/pytest tests/test_streamlit_app.py tests/test_dashboard_audit.py -v
 ```
 
 ---

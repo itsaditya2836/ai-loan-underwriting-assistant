@@ -67,16 +67,19 @@ The dashboard acts strictly as a **window into the system**, consuming existing 
 
 ---
 
-## 2. Navigation Structure
+## 2. Navigation Structure (Upgraded in Stage 5 Streamlit Application)
 
-The dashboard interface is structured around a streamlined sidebar navigation menu:
+The modular Streamlit UI in `app/ui/` exposes seven connected pages (detailed further in [`STAGE_5_STREAMLIT_APPLICATION.md`](STAGE_5_STREAMLIT_APPLICATION.md)):
 
 ```text
-Sidebar Navigation
-├── 🚀 Underwriting Pipeline   → Interactive multi-agent pipeline execution & decision analysis
-├── 👤 Application Details     → Full applicant dossier and historical multi-run ledger
-├── 📜 Audit Trail & History   → Comprehensive historical runs database with dynamic filtering
-└── 📊 Aggregate Analytics     → Portfolio-level distributions, KPI metrics, and analytical charts
+Sidebar Navigation (app/ui/dashboard.py)
+├── Dashboard            → SQLite KPIs (apps vs runs), failed-run exclusion, trends & activity
+├── New Application      → Schema-validated Applicant intake, PDF upload checks & submission
+├── Applications         → Persisted & synthetic applicant directory with multi-run summaries
+├── Application Details  → Applicant dossier, uploaded metadata & chronological run ledger
+├── Document Review      → Per-document OCR, classification confidence & masked field extraction
+├── Underwriting Results → Final decision, fail-closed safeguards, domain tabs & agent telemetry
+└── Audit History        → Filterable, read-only SQLite audit ledger & snapshot inspector
 ```
 
 The sidebar also provides:
@@ -236,7 +239,7 @@ All screens feature prominent disclaimers:
 
 ## 12. Automated Testing Suite
 
-The dashboard and audit trail are verified by `tests/test_dashboard_audit.py` (10 tests, isolated via `tmp_path` SQLite databases) and the broader project test suite:
+The UI tests live in `tests/test_dashboard_audit.py` and `tests/test_streamlit_app.py` (isolated via `tmp_path` SQLite databases and Streamlit `AppTest`):
 - `test_audit_table_initialization`: Verifies SQLite schema creation and columns.
 - `test_save_and_retrieve_underwriting_run`: Tests full roundtrip audit persistence.
 - `test_audit_immutability_multiple_runs`: Verifies multiple evaluations of the same applicant preserve distinct IDs.

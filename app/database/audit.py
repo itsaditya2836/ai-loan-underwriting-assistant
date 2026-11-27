@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.database.db import get_database_connection
+from app.document_processing.security import mask_identifier, mask_sensitive_text
 from app.schemas.decision import DecisionReasoningResult
 from app.schemas.underwriting import UnderwritingAnalysisResult
 from app.utils.helpers import get_logger
@@ -27,6 +29,7 @@ _EXTRA_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("agent_statuses_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("consistency_conflicts_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("validation_warnings_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("details_snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 
@@ -89,7 +92,8 @@ def init_audit_table() -> None:
         review_reasons_json TEXT NOT NULL DEFAULT '[]',
         agent_statuses_json TEXT NOT NULL DEFAULT '{}',
         consistency_conflicts_json TEXT NOT NULL DEFAULT '[]',
-        validation_warnings_json TEXT NOT NULL DEFAULT '[]'
+        validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+        details_snapshot_json TEXT NOT NULL DEFAULT '{}'
     );
     """
     create_index_app_sql = """
@@ -118,6 +122,209 @@ def init_audit_table() -> None:
         cursor.execute(create_index_ts_sql)
         cursor.execute(create_index_rec_sql)
         logger.info("Audit table 'underwriting_runs' initialized successfully.")
+
+
+_SENSITIVE_FIELD_NAMES = {
+    "id_ref",
+    "account_number",
+    "pan",
+    "aadhaar",
+    "aadhar",
+    "ssn",
+    "phone",
+    "mobile",
+}
+
+
+def _mask_field_display(
+    field_name: str, value: Any, explicit_masked: Optional[str] = None
+) -> str:
+    """Return a masked display string for sensitive identifiers or financial account references."""
+    if explicit_masked:
+        return str(explicit_masked)
+    if value is None:
+        return "N/A"
+    s = str(value)
+    if str(field_name).lower() in _SENSITIVE_FIELD_NAMES:
+        return mask_identifier(s)
+    return mask_sensitive_text(s)
+
+
+def _build_masked_details_snapshot(
+    analysis: UnderwritingAnalysisResult,
+    decision: DecisionReasoningResult,
+) -> Dict[str, Any]:
+    """Construct a privacy-masked Stage 3-8 snapshot for historical audit inspection."""
+    doc_payload: Optional[Dict[str, Any]] = None
+    doc_res = analysis.document_result
+    if doc_res is not None:
+        docs_meta: List[Dict[str, Any]] = []
+        for d in doc_res.documents_found:
+            fields_meta: Dict[str, Any] = {}
+            for fname, fval in sorted(d.extracted_fields.items()):
+                fields_meta[fname] = {
+                    "field_name": fval.field_name,
+                    "value": _mask_field_display(fname, fval.value, fval.masked_value),
+                    "masked_value": fval.masked_value
+                    or (
+                        mask_identifier(str(fval.value))
+                        if fname.lower() in _SENSITIVE_FIELD_NAMES
+                        else None
+                    ),
+                    "confidence": float(fval.confidence),
+                    "source_document": fval.source_document,
+                    "page_number": int(fval.page_number),
+                    "extraction_method": fval.extraction_method,
+                    "validation_status": fval.validation_status,
+                    "validation_message": fval.validation_message,
+                    "evidence": mask_sensitive_text(fval.evidence),
+                }
+            docs_meta.append(
+                {
+                    "document_id": d.document_id,
+                    "filename": (
+                        os.path.basename(d.file_path) if d.file_path else d.document_id
+                    ),
+                    "document_type": d.document_type,
+                    "classification_confidence": float(d.classification_confidence),
+                    "classification_status": d.classification_status,
+                    "classification_evidence": mask_sensitive_text(
+                        d.classification_evidence
+                    ),
+                    "is_scanned": bool(d.is_scanned),
+                    "extraction_method": d.extraction_method,
+                    "page_count": int(d.page_count),
+                    "native_text_pages": int(d.native_text_pages),
+                    "ocr_pages": int(d.ocr_pages),
+                    "empty_pages": int(d.empty_pages),
+                    "failed_pages": int(d.failed_pages),
+                    "content_sha256": d.content_sha256,
+                    "extracted_fields": fields_meta,
+                }
+            )
+        agg_masked = {
+            fname: {
+                "field_name": ef.field_name,
+                "value": _mask_field_display(fname, ef.value, ef.masked_value),
+                "confidence": float(ef.confidence),
+                "source_document": ef.source_document,
+                "page_number": int(ef.page_number),
+                "extraction_method": ef.extraction_method,
+                "validation_status": ef.validation_status,
+            }
+            for fname, ef in sorted(doc_res.all_extracted_fields.items())
+        }
+        doc_payload = {
+            "processing_status": doc_res.processing_status,
+            "processing_errors": list(doc_res.processing_errors),
+            "is_complete": bool(doc_res.is_complete),
+            "ocr_used": bool(doc_res.ocr_used),
+            "expected_documents": list(doc_res.expected_documents),
+            "documents_missing": list(doc_res.documents_missing),
+            "unclassified_documents": list(doc_res.unclassified_documents),
+            "duplicate_documents": list(doc_res.duplicate_documents),
+            "total_pages": int(doc_res.total_pages),
+            "native_text_pages": int(doc_res.native_text_pages),
+            "ocr_pages": int(doc_res.ocr_pages),
+            "empty_pages": int(doc_res.empty_pages),
+            "failed_pages": int(doc_res.failed_pages),
+            "missing_fields": dict(doc_res.missing_fields),
+            "invalid_fields": dict(doc_res.invalid_fields),
+            "ambiguous_fields": dict(doc_res.ambiguous_fields),
+            "field_conflicts": dict(doc_res.field_conflicts),
+            "security_warnings": list(doc_res.security_warnings),
+            "documents_found": docs_meta,
+            "all_extracted_fields": agg_masked,
+        }
+
+    elig_payload: Optional[Dict[str, Any]] = None
+    if analysis.eligibility_result is not None:
+        er = analysis.eligibility_result
+        elig_payload = {
+            "status": er.status.value,
+            "policy_version": er.policy_version,
+            "max_eligible_amount": er.max_eligible_amount,
+            "dti_ratio": er.dti_ratio,
+            "rules_passed": list(er.rules_passed),
+            "rules_failed": list(er.rules_failed),
+            "rules_requiring_review": list(er.rules_requiring_review),
+            "reasons": list(er.reasons),
+            "rule_results": [
+                {
+                    "rule_id": r.rule_id,
+                    "rule_name": r.rule_name,
+                    "status": r.status.value,
+                    "passed": r.passed,
+                    "actual_value": str(r.actual_value),
+                    "expected_value": str(r.expected_value),
+                    "reason": r.reason,
+                }
+                for r in er.rule_results
+            ],
+        }
+
+    risk_payload: Optional[Dict[str, Any]] = None
+    if analysis.risk_result is not None:
+        rr = analysis.risk_result
+        risk_payload = {
+            "risk_category": rr.risk_category.value,
+            "risk_score": decision.risk_score,
+            "method": rr.method,
+            "model_version": rr.model_version,
+            "risk_factors": list(rr.risk_factors),
+            "protective_factors": list(rr.protective_factors),
+            "features_used": dict(rr.features_used),
+            "feature_importance": dict(rr.feature_importance),
+        }
+
+    anom_payload: Optional[Dict[str, Any]] = None
+    if analysis.anomaly_result is not None:
+        ar = analysis.anomaly_result
+        anom_payload = {
+            "severity": ar.severity.value,
+            "anomaly_score": ar.anomaly_score,
+            "has_anomalies": bool(ar.has_anomalies),
+            "missing_evidence": list(ar.missing_evidence),
+            "summary": mask_sensitive_text(ar.summary or ""),
+            "flags": [
+                {
+                    "rule_id": f.rule_id,
+                    "anomaly_type": f.anomaly_type,
+                    "severity": f.severity.value,
+                    "expected_value": _mask_field_display(
+                        f.anomaly_type, f.expected_value
+                    ),
+                    "observed_value": _mask_field_display(
+                        f.anomaly_type, f.observed_value
+                    ),
+                    "description": mask_sensitive_text(f.description),
+                    "evidence": mask_sensitive_text(f.evidence or ""),
+                }
+                for f in ar.flags
+            ],
+        }
+
+    return {
+        "document_verification_status": decision.document_verification_status,
+        "fraud_status": decision.fraud_status,
+        "authoritative_sources": dict(analysis.authoritative_sources),
+        "agent_execution_details": {
+            k: {
+                "status": st.status.value,
+                "success": st.success,
+                "output_available": st.output_available,
+                "duration_ms": st.duration_ms,
+                "warnings": list(st.warnings),
+                "error": st.error,
+                "evidence_references": list(st.evidence_references),
+            }
+            for k, st in sorted(analysis.agent_statuses.items())
+        },
+        "document_package": doc_payload,
+        "eligibility": elig_payload,
+        "risk": risk_payload,
+        "anomaly": anom_payload,
+    }
 
 
 def save_underwriting_run(
@@ -200,6 +407,7 @@ def save_underwriting_run(
     }
     conflicts = decision.consistency_conflicts or analysis.consistency_conflicts
     val_warnings = decision.validation_warnings or analysis.validation_warnings
+    details_snapshot = _build_masked_details_snapshot(analysis, decision)
 
     insert_sql = """
     INSERT INTO underwriting_runs (
@@ -231,8 +439,9 @@ def save_underwriting_run(
         review_reasons_json,
         agent_statuses_json,
         consistency_conflicts_json,
-        validation_warnings_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        validation_warnings_json,
+        details_snapshot_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
 
     with get_database_connection() as conn:
@@ -269,6 +478,7 @@ def save_underwriting_run(
                 _stable_json_dumps(agent_statuses),
                 _stable_json_dumps(conflicts),
                 _stable_json_dumps(val_warnings),
+                _stable_json_dumps(details_snapshot),
             ),
         )
         logger.info(
@@ -316,6 +526,9 @@ def get_audit_runs(
     pipeline_status: Optional[str] = None,
     risk_category: Optional[str] = None,
     anomaly_severity: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    application_id_prefix: Optional[str] = None,
     limit: int = 200,
 ) -> List[Dict[str, Any]]:
     """Retrieve filtered historical underwriting runs from the audit database."""
@@ -327,6 +540,9 @@ def get_audit_runs(
     if application_id:
         query += " AND application_id = ?"
         params.append(application_id)
+    if application_id_prefix:
+        query += " AND application_id LIKE ?"
+        params.append(f"%{application_id_prefix}%")
     if recommendation:
         query += " AND recommendation = ?"
         params.append(recommendation)
@@ -339,6 +555,12 @@ def get_audit_runs(
     if anomaly_severity:
         query += " AND anomaly_severity = ?"
         params.append(anomaly_severity)
+    if start_date:
+        query += " AND substr(timestamp, 1, 10) >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND substr(timestamp, 1, 10) <= ?"
+        params.append(end_date)
 
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
@@ -348,6 +570,56 @@ def get_audit_runs(
         cursor.execute(query, params)
         rows = cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def get_latest_runs_per_application(
+    exclude_failed: bool = False, limit: int = 500
+) -> List[Dict[str, Any]]:
+    """Return strictly one latest underwriting run per unique application_id (no duplicate rows)."""
+    init_audit_table()
+
+    where_clause = "WHERE pipeline_status != 'FAILED'" if exclude_failed else ""
+    query = f"""
+    SELECT r.*
+    FROM underwriting_runs r
+    INNER JOIN (
+        SELECT application_id, MAX(timestamp) AS max_ts
+        FROM underwriting_runs
+        {where_clause}
+        GROUP BY application_id
+    ) latest
+        ON r.application_id = latest.application_id
+       AND r.timestamp = latest.max_ts
+    GROUP BY r.application_id
+    ORDER BY r.timestamp DESC
+    LIMIT ?;
+    """
+    with get_database_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, (limit,))
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+
+
+def get_audit_daily_trends() -> List[Dict[str, Any]]:
+    """Return daily aggregated execution and recommendation counts sorted chronologically."""
+    init_audit_table()
+
+    query = """
+    SELECT
+        substr(timestamp, 1, 10) AS run_date,
+        COUNT(*) AS total_runs,
+        SUM(CASE WHEN recommendation = 'APPROVE' AND pipeline_status != 'FAILED' THEN 1 ELSE 0 END) AS approved,
+        SUM(CASE WHEN recommendation = 'REJECT' AND pipeline_status != 'FAILED' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN recommendation = 'MANUAL_REVIEW' AND pipeline_status != 'FAILED' THEN 1 ELSE 0 END) AS manual_review,
+        SUM(CASE WHEN pipeline_status = 'FAILED' THEN 1 ELSE 0 END) AS failed
+    FROM underwriting_runs
+    GROUP BY substr(timestamp, 1, 10)
+    ORDER BY run_date ASC;
+    """
+    with get_database_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        return [dict(r) for r in cursor.fetchall()]
 
 
 def get_audit_run_by_id(run_id: str) -> Optional[Dict[str, Any]]:
@@ -381,10 +653,17 @@ def get_audit_analytics_summary() -> Dict[str, Any]:
         )
         total_runs, unique_apps = cursor.fetchone()
 
+        cursor.execute(
+            "SELECT COUNT(DISTINCT application_id) FROM underwriting_runs WHERE pipeline_status != 'FAILED';"
+        )
+        unique_completed_apps = int(cursor.fetchone()[0] or 0)
+
         if total_runs == 0:
             return {
                 "total_runs": 0,
                 "unique_applications": 0,
+                "unique_completed_applications": 0,
+                "completed_runs_count": 0,
                 "recommendation_distribution": {
                     "APPROVE": 0,
                     "REJECT": 0,
@@ -461,6 +740,8 @@ def get_audit_analytics_summary() -> Dict[str, Any]:
         return {
             "total_runs": total_runs,
             "unique_applications": unique_apps,
+            "unique_completed_applications": unique_completed_apps,
+            "completed_runs_count": total_runs - status_dist.get("FAILED", 0),
             "recommendation_distribution": rec_dist,
             "risk_distribution": risk_dist,
             "anomaly_distribution": anom_dist,
@@ -486,6 +767,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "agent_statuses_json": {},
         "consistency_conflicts_json": [],
         "validation_warnings_json": [],
+        "details_snapshot_json": {},
     }
     for json_col, default_val in json_defaults.items():
         base_name = json_col.replace("_json", "")
@@ -518,8 +800,10 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
 __all__ = [
     "get_applicant_run_history",
     "get_audit_analytics_summary",
+    "get_audit_daily_trends",
     "get_audit_run_by_id",
     "get_audit_runs",
+    "get_latest_runs_per_application",
     "init_audit_table",
     "save_underwriting_run",
     "save_underwriting_run_safe",
